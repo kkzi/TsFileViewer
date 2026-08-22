@@ -153,14 +153,17 @@ void MainWindow::setupUi()
     leftLayout->addWidget(searchEdit_);
     leftLayout->addWidget(paramTree_, 1);
 
-    auto* right = new QSplitter(Qt::Vertical, central);
+    // Right side: vertical box (0 margins) holding the fixed paging bar on
+    // top and the table/plot splitter below; the bar is outside the splitter.
+    auto* rightPane = new QWidget(central);
+    auto* rightLayout = new QVBoxLayout(rightPane);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(0);
+    auto* right = new QSplitter(Qt::Vertical, rightPane);
 
-    // Paging + load progress bar, above the values table.
-    // Fixed 26px, not collapsible nor splitter-resizable.
-    auto* pagingBar = new QWidget(right);
-    pagingBar->setFixedHeight(26);
-    pagingBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    right->setCollapsible(0, false);
+    // Paging + load progress bar. Fixed 25px, outside any splitter.
+    auto* pagingBar = new QWidget(rightPane);
+    pagingBar->setFixedHeight(25);
     prevPage_ = new QPushButton(tr("<< Prev"), pagingBar);
     pageInfo_ = new QLabel(tr("rows 1-0"), pagingBar);
     nextPage_ = new QPushButton(tr("Next >>"), pagingBar);
@@ -178,6 +181,7 @@ void MainWindow::setupUi()
     progress_->hide();
     auto* pagingLayout = new QHBoxLayout(pagingBar);
     pagingLayout->setContentsMargins(4, 0, 4, 0);
+    pagingLayout->setSpacing(4);
     pagingLayout->addWidget(prevPage_);
     pagingLayout->addWidget(pageInfo_);
     pagingLayout->addWidget(nextPage_);
@@ -185,6 +189,9 @@ void MainWindow::setupUi()
     pagingLayout->addWidget(progress_);
     connect(prevPage_, &QPushButton::clicked, this, [this] { loadPage(page_ - 1); });
     connect(nextPage_, &QPushButton::clicked, this, [this] { loadPage(page_ + 1); });
+
+    rightLayout->addWidget(pagingBar);
+    rightLayout->addWidget(right, 1);
 
     valueModel_ = new ValueTableModel(this);
     valuesTable_ = new QTableView(right);
@@ -216,18 +223,15 @@ void MainWindow::setupUi()
             static_cast<void (QCPAxis::*)(const QCPRange&)>(
                 &QCPAxis::rangeChanged),
             this, [this](const QCPRange& r) { onPlotXRangeChanged(r); });
-    // Three panes: paging bar (fixed 26px), table, plot. stretch factors:
-    // paging=0 keeps it one row tall; table/plot split the rest.
-    right->setStretchFactor(0, 0);
+    // Splitter now has two panes: table and plot.
+    right->setStretchFactor(0, 1);
     right->setStretchFactor(1, 1);
-    right->setStretchFactor(2, 1);
-    right->setSizes({26, 320, 320});
-    // Also keep table and plot individually non-collapsible.
+    right->setSizes({320, 320});
+    right->setCollapsible(0, false);
     right->setCollapsible(1, false);
-    right->setCollapsible(2, false);
 
     central->addWidget(left);
-    central->addWidget(right);
+    central->addWidget(rightPane);
     central->setStretchFactor(0, 1);
     central->setStretchFactor(1, 3);
     central->setSizes({340, 940});

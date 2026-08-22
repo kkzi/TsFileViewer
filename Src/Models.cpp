@@ -240,8 +240,6 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
                    (series_->offset > 0 ? series_->offset : 0);
         case ColTime:
             return QString::number(series_->ts[row]);
-        case ColRel:
-            return QString::number((series_->ts[row] - series_->ts.first()) / 1e6, 'f', 6);
         case ColValue:
             if (row < series_->text.size() && !series_->text[row].isEmpty())
             {
@@ -263,7 +261,6 @@ QVariant ValueTableModel::headerData(int section, Qt::Orientation orientation, i
     {
         case ColNo: return QStringLiteral("No");
         case ColTime: return QStringLiteral("Time (us)");
-        case ColRel: return QStringLiteral("Rel (s)");
         case ColValue: return QStringLiteral("Value");
         default: return {};
     }

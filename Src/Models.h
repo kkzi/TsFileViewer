@@ -63,7 +63,6 @@ public:
     {
         ColNo = 0,
         ColTime,
-        ColRel,
         ColValue,
         ColTotal
     };

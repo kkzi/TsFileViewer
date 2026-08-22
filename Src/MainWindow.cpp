@@ -162,7 +162,7 @@ void MainWindow::setupUi()
     plot_->setInteraction(QCP::iRangeDrag, true);
     plot_->setInteraction(QCP::iRangeZoom, true);
     plot_->setNoAntialiasingOnDrag(true);
-    plot_->xAxis->setLabel(tr("Relative time (s)"));
+    plot_->xAxis->setLabel(tr("Time (us)"));
     plot_->yAxis->setLabel(tr("Value"));
     right->setStretchFactor(0, 1);
     right->setStretchFactor(1, 1);
@@ -371,11 +371,12 @@ void MainWindow::rebuildPlot()
     plot_->clearPlottables();
     if (series != nullptr && !series->ts.isEmpty())
     {
-        const qint64 t0 = series->ts.first();
+        // X axis in raw microseconds timestamps (same as the Time column),
+        // so plot and table agree across pages.
         QVector<double> x(series->ts.size());
         for (int i = 0; i < series->ts.size(); ++i)
         {
-            x[i] = (series->ts[i] - t0) / 1e6;
+            x[i] = static_cast<double>(series->ts[i]);
         }
         auto* graph = plot_->addGraph();
         graph->setData(x, series->value, true);
@@ -393,7 +394,7 @@ void MainWindow::rebuildPlot()
     }
     if (series != nullptr)
     {
-        plot_->xAxis->setLabel(tr("Relative time (s) — %1").arg(series->measurement));
+        plot_->xAxis->setLabel(tr("Time (us) — %1").arg(series->measurement));
     }
     plot_->replot(QCustomPlot::rpQueuedReplot);
 }

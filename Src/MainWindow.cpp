@@ -209,9 +209,12 @@ void MainWindow::setupUi()
             static_cast<void (QCPAxis::*)(const QCPRange&)>(
                 &QCPAxis::rangeChanged),
             this, [this](const QCPRange& r) { onPlotXRangeChanged(r); });
-    right->setStretchFactor(0, 1);
+    // Three panes: paging bar (fixed), table, plot. stretch factors:
+    // paging=0 keeps it one row tall; table/plot split the rest.
+    right->setStretchFactor(0, 0);
     right->setStretchFactor(1, 1);
-    right->setSizes({320, 320});
+    right->setStretchFactor(2, 1);
+    right->setSizes({28, 320, 320});
 
     central->addWidget(left);
     central->addWidget(right);

@@ -59,6 +59,8 @@ struct SeriesData
     QVector<double> value;  // NaN where the value is not numeric
     QVector<QString> text;  // non-empty only for STRING columns (parallel to value)
     bool numeric = true;    // false when the column holds text/boolean rows
+    qint64 offset = 0;      // absolute row index of ts[0] within the series
+    bool hasMore = false;   // final chunk only: a further page exists
     QString key() const { return device + QLatin1Char('/') + measurement; }
 };
 Q_DECLARE_METATYPE(SeriesData)
@@ -77,7 +79,9 @@ public:
     // the final chunk. queryFailed(QString) on error. Selecting a new
     // parameter while a query is running supersedes the old one (its
     // remaining chunks are dropped).
-    void queryValuesAsync(const ParamInfo& param);
+    // Pages: rows [page * kPageSize, (page+1) * kPageSize). Page >= 0.
+    static constexpr qint64 kPageSize = 1000000;
+    void queryValuesAsync(const ParamInfo& param, qint64 page = 0);
 
     // Stop the worker and wait. Call before destruction from the UI thread.
     void shutdown();

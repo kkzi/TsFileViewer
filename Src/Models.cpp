@@ -168,7 +168,8 @@ void ValueTableModel::setSeries(const SeriesData& series)
 
 void ValueTableModel::appendChunk(const SeriesData& chunk)
 {
-    if (series_ == nullptr || series_->key() != chunk.key())
+    if (series_ == nullptr || series_->key() != chunk.key() ||
+        series_->offset != chunk.offset)
     {
         setSeries(chunk);
         return;
@@ -176,6 +177,13 @@ void ValueTableModel::appendChunk(const SeriesData& chunk)
     const int first = series_->ts.size();
     const int added = chunk.ts.size();
     series_->numeric = series_->numeric && chunk.numeric;
+    // Final chunk carries the page metadata.
+    if (chunk.hasMore)
+    {
+        series_->hasMore = chunk.hasMore;
+    }
+    // Same key+page appends; a different page resets via setSeries by the
+    // caller ensuring key()/offset differ.
     series_->ts += chunk.ts;
     series_->value += chunk.value;
     series_->text += chunk.text;
@@ -216,7 +224,8 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
     switch (index.column())
     {
         case ColNo:
-            return row + 1;
+            return static_cast<qint64>(row + 1) +
+                   (series_->offset > 0 ? series_->offset : 0);
         case ColTime:
             return QString::number(series_->ts[row]);
         case ColRel:

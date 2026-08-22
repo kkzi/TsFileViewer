@@ -41,6 +41,8 @@ private:
     void clearContent();
     // Double-click / Enter / context-menu action on the param tree.
     void onParamActivated();
+    // Query the current parameter at a row-based page (0-based).
+    void loadPage(qint64 page);
 
     // widgets
     QLineEdit* searchEdit_ = nullptr;
@@ -49,6 +51,9 @@ private:
     QCustomPlot* plot_ = nullptr;
     QProgressBar* busy_ = nullptr;
     QProgressBar* progress_ = nullptr;  // status bar load indicator
+    class QPushButton* prevPage_ = nullptr;
+    class QPushButton* nextPage_ = nullptr;
+    class QLabel* pageInfo_ = nullptr;
 
     // toolbar labels: important info inline, the rest in tooltips
     QLabel* fileLabel_ = nullptr;
@@ -64,4 +69,5 @@ private:
     ValueTableModel* valueModel_ = nullptr;
     ParamInfo currentParam_;
     bool loading_ = false;  // a query is streaming (guards re-trigger)
+    qint64 page_ = 0;       // current row page of currentParam_
 };

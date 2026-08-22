@@ -14,6 +14,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTableView>
@@ -198,7 +199,20 @@ void MainWindow::setupUi()
         menu.exec(paramTree_->viewport()->mapToGlobal(pos));
     });
 
-    // ---- status bar: load progress -----------------------------------------
+    // ---- status bar: paging + load progress -------------------------------
+    prevPage_ = new QPushButton(tr("<< Prev"), this);
+    nextPage_ = new QPushButton(tr("Next >>"), this);
+    pageInfo_ = new QLabel(tr("rows 1-0"), this);
+    prevPage_->setFlat(true);
+    nextPage_->setFlat(true);
+    prevPage_->setEnabled(false);
+    nextPage_->setEnabled(false);
+    statusBar()->addPermanentWidget(prevPage_);
+    statusBar()->addPermanentWidget(pageInfo_);
+    statusBar()->addPermanentWidget(nextPage_);
+    connect(prevPage_, &QPushButton::clicked, this, [this] { loadPage(page_ - 1); });
+    connect(nextPage_, &QPushButton::clicked, this, [this] { loadPage(page_ + 1); });
+
     // Busy-mode bar: the total row count is unknown until the query
     // finishes, so no percentage is shown — just an active pulse plus the
     // row count in the status bar text.
@@ -280,8 +294,35 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     {
         return;
     }
-    statusBar()->showMessage(
-        tr("%1: %2 points").arg(series->key()).arg(series->ts.size()), 5000);
+    // Page info + navigation. hasMore is set when the page came back full,
+    // which means a further page likely exists (probing for the exact total
+    // would require draining it — exactly what paging avoids).
+    const qint64 first = series->offset + 1;
+    const qint64 last = series->offset + series->ts.size();
+    pageInfo_->setText(tr("rows %1-%2%3")
+                           .arg(first)
+                           .arg(last)
+                           .arg(series->hasMore ? QStringLiteral("+") : QString()));
+    prevPage_->setEnabled(series->offset > 0);
+    nextPage_->setEnabled(series->hasMore);
+    if (series->hasMore)
+    {
+        statusBar()->showMessage(
+            tr("%1: page %2, rows %3-%4 (page size %5M rows; use Next to "
+               "continue)")
+                .arg(series->key())
+                .arg(page_ + 1)
+                .arg(first)
+                .arg(last)
+                .arg(TsFileDocument::kPageSize / 1000000.0, 0, 'f', 1),
+            8000);
+    }
+    else
+    {
+        statusBar()->showMessage(
+            tr("%1: %2 rows (end of data)").arg(series->key()).arg(series->ts.size()),
+            5000);
+    }
     rebuildPlot();
 
     // ---- stats into the plot tooltip --------------------------------------
@@ -387,9 +428,22 @@ void MainWindow::onParamActivated()
         return;
     }
     currentParam_ = param;
+    loadPage(0);
+}
+
+void MainWindow::loadPage(qint64 page)
+{
+    if (loading_ || currentParam_.measurement.isEmpty() || page < 0)
+    {
+        return;
+    }
+    page_ = page;
     loading_ = true;
     busy_->show();
     progress_->show();
-    statusBar()->showMessage(tr("Querying %1...").arg(param.key()));
-    doc_->queryValuesAsync(param);
+    prevPage_->setEnabled(false);
+    nextPage_->setEnabled(false);
+    statusBar()->showMessage(
+        tr("Querying %1 (page %2)...").arg(currentParam_.key()).arg(page_ + 1));
+    doc_->queryValuesAsync(currentParam_, page_);
 }

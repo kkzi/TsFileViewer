@@ -116,8 +116,7 @@ public:
     explicit Worker(QObject* parent = nullptr) : QObject(parent) {}
 
 public slots:
-    void open(const QString& path)
-    {
+    void open(const QString& path)    {
         // Bridge to an ACP-safe path for the library (see PathBridge.h);
         // meta.path below keeps the original for display.
         const std::string libPath = pathbridge::toLibPath(path).toStdString();
@@ -203,7 +202,7 @@ public slots:
         emit opened(meta, params);
     }
 
-    void query(const ParamInfo& param)
+    void query(const ParamInfo& param, qint64 page)
     {
         if (path_.isEmpty())
         {
@@ -225,24 +224,25 @@ public slots:
             return;
         }
 
+        // Paged query: queryByRow pushes offset/limit down (chunk/page level
+        // for dense devices), so paging does not decode skipped rows.
+        const qint64 offset = page * kPageSize;
         storage::ResultSet* result = nullptr;
         int q = common::E_OK;
         if (param.source == ParamSource::Table)
         {
-            // Table query: result column layout is 1-based: col 1 = time,
-            // col 2.. = selected field columns (only one column selected here).
-            q = reader.query(param.device.toStdString(),
-                             {param.measurement.toStdString()},
-                             std::numeric_limits<int64_t>::min(),
-                             std::numeric_limits<int64_t>::max(), result);
+            q = reader.queryByRow(param.device.toStdString(),
+                                  {param.measurement.toStdString()},
+                                  static_cast<int>(offset),
+                                  static_cast<int>(kPageSize), result);
         }
         else
         {
             // Tree path query: device + "." + measurement.
             std::vector<std::string> pathList{
                 param.device.toStdString() + "." + param.measurement.toStdString()};
-            q = reader.query(pathList, std::numeric_limits<int64_t>::min(),
-                             std::numeric_limits<int64_t>::max(), result);
+            q = reader.queryByRow(pathList, static_cast<int>(offset),
+                                  static_cast<int>(kPageSize), result);
         }
         if (q != common::E_OK || result == nullptr)
         {
@@ -255,6 +255,7 @@ public slots:
         out.device = param.device;
         out.measurement = param.measurement;
         out.numeric = param.dataType != common::TEXT;
+        out.offset = offset;
 
         bool haveData = false;
         int64_t minTs = std::numeric_limits<int64_t>::max();
@@ -262,11 +263,11 @@ public slots:
 
         // Progressive delivery: flush the accumulated rows to the UI every
         // flushRows rows so the table and plot grow visibly during long
-        // queries instead of freezing until completion.
+        // queries instead of freezing until completion. Memory is bounded by
+        // the page size (one page = kPageSize rows in the model).
         constexpr int kFlushRows = 500000;
         QElapsedTimer sinceFlush;
         sinceFlush.start();
-        qint64 totalRows = 0;
 
         bool hasNext = false;
         while (true)
@@ -305,7 +306,6 @@ public slots:
             if (!haveData || ts < minTs) minTs = ts;
             if (!haveData || ts > maxTs) maxTs = ts;
             haveData = true;
-            ++totalRows;
 
             // Supersede check inside the loop: a new selection aborts this
             // query early; the already-flushed chunks stay on screen until
@@ -346,6 +346,9 @@ public slots:
             }
         }
 
+        // A full page implies more rows may follow (we cannot know the total
+        // without draining it, which is exactly what paging avoids).
+        out.hasMore = out.ts.size() >= kPageSize;
         emit valuesChunk(out, /*done=*/true);
         emit timeRangeKnown(firstTs_, lastTs_, haveRange_);
     }
@@ -419,15 +422,15 @@ void TsFileDocument::openAsync(const QString& path)
     });
 }
 
-void TsFileDocument::queryValuesAsync(const ParamInfo& param)
+void TsFileDocument::queryValuesAsync(const ParamInfo& param, qint64 page)
 {
     // Mark the request so a running query can notice it at its next flush
     // point and abort; the invoke then delivers the new one. The lambda runs
     // on the worker thread (queued), so pendingParam_ stays single-threaded.
     emit supersedeRequested(param);
-    QMetaObject::invokeMethod(worker_, [worker = worker_, param]
+    QMetaObject::invokeMethod(worker_, [worker = worker_, param, page]
     {
-        worker->query(param);
+        worker->query(param, page);
     });
 }
 

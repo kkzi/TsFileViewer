@@ -141,6 +141,7 @@ void MainWindow::setupUi()
     paramTree_ = new QTreeView(left);
     paramTree_->setModel(proxy_);
     paramTree_->setSortingEnabled(false);
+    paramTree_->header()->resizeSection(0, 250);  // Parameter column default
     paramTree_->setUniformRowHeights(true);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(4, 4, 4, 4);

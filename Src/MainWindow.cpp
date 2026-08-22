@@ -141,8 +141,8 @@ void MainWindow::setupUi()
     paramTree_ = new QTreeView(left);
     paramTree_->setModel(proxy_);
     paramTree_->setSortingEnabled(false);
-    // Parameter column stretches; Type column fixed width.
-    paramTree_->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    // Parameter column stretches to fill; Type column fixed width.
+    paramTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     paramTree_->header()->setSectionResizeMode(1, QHeaderView::Fixed);
     paramTree_->header()->resizeSection(1, 80);
     paramTree_->setUniformRowHeights(true);

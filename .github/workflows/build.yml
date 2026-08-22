@@ -9,12 +9,18 @@ on:
 
 jobs:
   windows:
-    runs-on: windows-2019
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
+
+      # Puts MSVC cl.exe on PATH for the preset's plain 'cl' compiler.
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4

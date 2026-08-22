@@ -234,6 +234,10 @@ void ValueTableModel::appendChunk(const SeriesData& chunk)
     {
         series_->hasMore = chunk.hasMore;
     }
+    if (chunk.totalRows > 0)
+    {
+        series_->totalRows = chunk.totalRows;
+    }
     // Qt contract: beginInsertRows BEFORE the underlying data grows.
     beginInsertRows(QModelIndex(), first, first + added - 1);
     series_->numeric = series_->numeric && chunk.numeric;

@@ -458,15 +458,28 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     {
         return;
     }
-    // Page info + navigation. hasMore is set when the page came back full,
-    // which means a further page likely exists (probing for the exact total
-    // would require draining it — exactly what paging avoids).
+    // Page info + navigation. hasMore is set when the page came back full;
+    // the series total (when the metadata provided it) yields the page count.
     const qint64 first = series->offset + 1;
     const qint64 last = series->offset + series->ts.size();
-    pageInfo_->setText(tr("rows %1-%2%3")
-                           .arg(first)
-                           .arg(last)
-                           .arg(series->hasMore ? QStringLiteral("+") : QString()));
+    if (series->totalRows > 0)
+    {
+        const qint64 totalPages =
+            (series->totalRows + TsFileDocument::kPageSize - 1) /
+            TsFileDocument::kPageSize;
+        pageInfo_->setText(tr("page %1/%2  rows %3-%4")
+                               .arg(page_ + 1)
+                               .arg(totalPages)
+                               .arg(first)
+                               .arg(last));
+    }
+    else
+    {
+        pageInfo_->setText(tr("page %1+  rows %2-%3+")
+                               .arg(page_ + 1)
+                               .arg(first)
+                               .arg(last));
+    }
     prevPage_->setEnabled(series->offset > 0);
     nextPage_->setEnabled(series->hasMore);
     exportBtn_->setEnabled(true);

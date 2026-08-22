@@ -352,12 +352,56 @@ public slots:
             }
         }
 
-        // A full page implies more rows may follow (we cannot know the total
-        // without draining it, which is exactly what paging avoids). Count
-        // across flushes, not the final partial batch alone.
+        // A full page implies more rows may follow. The exact series total
+        // comes free from the metadata statistic (no drain needed).
         out.hasMore = pageRows >= kPageSize;
+        out.totalRows = seriesTotalRows(param);
         emit valuesChunk(out, /*done=*/true);
         emit timeRangeKnown(firstTs_, lastTs_, haveRange_);
+    }
+
+    // Whole-series row count from the timeseries metadata statistic
+    // (already deserialized; no data drain). -1 when unavailable.
+    qint64 seriesTotalRows(const ParamInfo& param)
+    {
+        qint64 total = -1;
+        storage::TsFileReader reader;
+        if (reader.open(path_.toStdString()) != common::E_OK)
+        {
+            return total;
+        }
+        const auto meta = reader.get_timeseries_metadata();
+        for (const auto& kv : meta)
+        {
+            for (const auto& tsip : kv.second)
+            {
+                if (tsip->get_measurement_name().to_std_string() !=
+                    param.measurement.toStdString())
+                {
+                    continue;
+                }
+                // Aligned series: the value sub-index carries the value stats.
+                const storage::Statistic* st = nullptr;
+                auto* aligned =
+                    dynamic_cast<storage::AlignedTimeseriesIndex*>(tsip.get());
+                if (aligned != nullptr && aligned->value_ts_idx_ != nullptr)
+                {
+                    st = aligned->value_ts_idx_->get_statistic();
+                }
+                else
+                {
+                    st = tsip->get_statistic();
+                }
+                if (st != nullptr)
+                {
+                    total = st->get_count();
+                }
+                reader.close();
+                return total;
+            }
+        }
+        reader.close();
+        return total;
     }
 
     void setFile(const QString& path)

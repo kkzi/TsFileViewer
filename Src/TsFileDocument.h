@@ -61,6 +61,7 @@ struct SeriesData
     bool numeric = true;    // false when the column holds text/boolean rows
     qint64 offset = 0;      // absolute row index of ts[0] within the series
     bool hasMore = false;   // final chunk only: a further page exists
+    qint64 totalRows = -1;  // whole series row count from metadata (-1 unknown)
     QString key() const { return device + QLatin1Char('/') + measurement; }
 };
 Q_DECLARE_METATYPE(SeriesData)

@@ -271,9 +271,29 @@ void MainWindow::setupUi()
     valuesTable_->verticalHeader()->hide();  // No column shows row numbers (No column exists)
     valuesTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     valuesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    // Double-click a row: center that sample in the plot and zoom in.
+    // Double-click a row (or Enter on it): center that sample in the plot,
+    // zoom in, and place the tracer. Plain selection does NOT move the
+    // tracer (browsing rows must not repaint the plot).
+    const auto placeTracerOn = [this](const QModelIndex& idx)
+    {
+        const SeriesData* series = valueModel_->series();
+        if (series == nullptr || !idx.isValid() ||
+            idx.row() >= series->ts.size() || tracer_ == nullptr)
+        {
+            if (tracer_ != nullptr)
+            {
+                tracer_->setVisible(false);
+                plot_->replot(QCustomPlot::rpQueuedReplot);
+            }
+            return;
+        }
+        tracer_->setVisible(true);
+        tracer_->setGraphKey(
+            static_cast<double>(series->ts[idx.row()]) / 1e6);
+        plot_->replot(QCustomPlot::rpQueuedReplot);
+    };
     connect(valuesTable_, &QTableView::doubleClicked, this,
-            [this](const QModelIndex& idx)
+            [this, placeTracerOn](const QModelIndex& idx)
     {
         const SeriesData* series = valueModel_->series();
         if (series == nullptr || !idx.isValid() ||
@@ -287,29 +307,18 @@ void MainWindow::setupUi()
         const double span = std::min(plot_->xAxis->range().size(), 0.2);
         plot_->xAxis->setRange(t - span / 2, t + span / 2);
         plot_->replot();
+        placeTracerOn(idx);
     });
-    // Single selection (click/arrow keys/plot-link): place the tracer on
-    // the selected row's sample.
-    connect(valuesTable_->selectionModel(),
-            &QItemSelectionModel::selectionChanged, this, [this]
-    {
-        const SeriesData* series = valueModel_->series();
-        const QModelIndex cur = valuesTable_->currentIndex();
-        if (series == nullptr || !cur.isValid() ||
-            cur.row() >= series->ts.size() || tracer_ == nullptr)
-        {
-            if (tracer_ != nullptr)
-            {
-                tracer_->setVisible(false);
-                plot_->replot(QCustomPlot::rpQueuedReplot);
-            }
-            return;
-        }
-        tracer_->setVisible(true);
-        tracer_->setGraphKey(
-            static_cast<double>(series->ts[cur.row()]) / 1e6);
-        plot_->replot(QCustomPlot::rpQueuedReplot);
-    });
+    // Enter on a selected row: same treatment (tracer + no recenter — the
+    // row is already chosen; just mark it).
+    auto* rowActivateAct = new QAction(tr("Mark row"), this);
+    addAction(rowActivateAct);
+    // Only while the table has focus, else Return would double-fire with
+    // the tree's load action.
+    valuesTable_->addAction(rowActivateAct);
+    rowActivateAct->setShortcut(Qt::Key_Return);
+    connect(rowActivateAct, &QAction::triggered, this,
+            [this, placeTracerOn] { placeTracerOn(valuesTable_->currentIndex()); });
 
     plot_ = new QCustomPlot(right);
     plot_->legend->setVisible(false);  // no legend
@@ -384,6 +393,14 @@ void MainWindow::setupUi()
         const QModelIndex idx = valueModel_->index(row, 1);
         valuesTable_->setCurrentIndex(idx);
         valuesTable_->scrollTo(idx, QAbstractItemView::PositionAtCenter);
+        // Explicit tracer placement here: plain selection no longer moves it.
+        if (tracer_ != nullptr)
+        {
+            tracer_->setVisible(true);
+            tracer_->setGraphKey(
+                static_cast<double>(series->ts[row]) / 1e6);
+            plot_->replot(QCustomPlot::rpQueuedReplot);
+        }
     });
     // Fixed-precision seconds on the x axis (no scientific notation). 6
     // decimals = microsecond resolution; when the view spans hundreds of

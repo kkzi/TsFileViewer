@@ -176,18 +176,27 @@ void ValueTableModel::appendChunk(const SeriesData& chunk)
     }
     const int first = series_->ts.size();
     const int added = chunk.ts.size();
-    series_->numeric = series_->numeric && chunk.numeric;
     // Final chunk carries the page metadata.
     if (chunk.hasMore)
     {
         series_->hasMore = chunk.hasMore;
     }
-    // Same key+page appends; a different page resets via setSeries by the
-    // caller ensuring key()/offset differ.
+    // Qt contract: beginInsertRows BEFORE the underlying data grows.
+    beginInsertRows(QModelIndex(), first, first + added - 1);
+    series_->numeric = series_->numeric && chunk.numeric;
+    // text is sparse (only TEXT columns push entries); keep it row-aligned
+    // with empty placeholders so data() can index it by row.
+    if (series_->text.size() != static_cast<int>(series_->ts.size()))
+    {
+        series_->text.resize(series_->ts.size());
+    }
     series_->ts += chunk.ts;
     series_->value += chunk.value;
     series_->text += chunk.text;
-    beginInsertRows(QModelIndex(), first, first + added - 1);
+    if (series_->text.size() != static_cast<int>(series_->ts.size()))
+    {
+        series_->text.resize(series_->ts.size());
+    }
     endInsertRows();
 }
 
@@ -231,7 +240,7 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
         case ColRel:
             return QString::number((series_->ts[row] - series_->ts.first()) / 1e6, 'f', 6);
         case ColValue:
-            if (row < series_->text.size())
+            if (row < series_->text.size() && !series_->text[row].isEmpty())
             {
                 return series_->text[row];
             }

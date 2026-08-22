@@ -268,6 +268,7 @@ public slots:
         constexpr int kFlushRows = 500000;
         QElapsedTimer sinceFlush;
         sinceFlush.start();
+        qint64 pageRows = 0;  // rows delivered for this page (across flushes)
 
         bool hasNext = false;
         while (true)
@@ -319,6 +320,7 @@ public slots:
 
             if (out.ts.size() >= kFlushRows && sinceFlush.elapsed() >= 200)
             {
+                pageRows += out.ts.size();
                 emit valuesChunk(out, /*done=*/false);
                 out.ts.clear();
                 out.value.clear();
@@ -328,6 +330,7 @@ public slots:
         }
         reader.destroy_query_data_set(result);
         reader.close();
+        pageRows += out.ts.size();
 
         // Fill the file-level time range lazily: the first query defines it,
         // later ones widen it (matches TsFileStat's global min/max semantics).
@@ -347,8 +350,9 @@ public slots:
         }
 
         // A full page implies more rows may follow (we cannot know the total
-        // without draining it, which is exactly what paging avoids).
-        out.hasMore = out.ts.size() >= kPageSize;
+        // without draining it, which is exactly what paging avoids). Count
+        // across flushes, not the final partial batch alone.
+        out.hasMore = pageRows >= kPageSize;
         emit valuesChunk(out, /*done=*/true);
         emit timeRangeKnown(firstTs_, lastTs_, haveRange_);
     }

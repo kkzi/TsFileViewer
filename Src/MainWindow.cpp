@@ -54,6 +54,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     {
         treeModel_->load(params);
         proxy_->setFilter(QString());
+        paramTree_->expandAll();
         updateMetaBar(meta);
         clearContent();
         busy_->hide();
@@ -65,7 +66,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         statusBar()->showMessage(tr("Error: %1").arg(error));
         QMessageBox::warning(this, tr("Open failed"), error);
     });
-    connect(doc_, &TsFileDocument::valuesReady, this, &MainWindow::showValues);
+    connect(doc_, &TsFileDocument::valuesChunk, this, &MainWindow::onValuesChunk);
     connect(doc_, &TsFileDocument::queryFailed, this, [this](const QString& error)
     {
         busy_->hide();
@@ -219,40 +220,36 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
     fileLabel_->setToolTip(tip.join(QLatin1Char('\n')));
 }
 
-void MainWindow::showValues(const SeriesData& series)
+void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
 {
-    valueModel_->setSeries(series);
-    busy_->hide();
-    statusBar()->showMessage(
-        tr("%1: %2 points").arg(series.key()).arg(series.ts.size()), 5000);
-
-    // ---- plot -------------------------------------------------------------
-    plot_->clearPlottables();
-    if (!series.ts.isEmpty())
+    valueModel_->appendChunk(chunk);
+    if (!done)
     {
-        const qint64 t0 = series.ts.first();
-        QVector<double> x(series.ts.size());
-        for (int i = 0; i < series.ts.size(); ++i)
-        {
-            x[i] = (series.ts[i] - t0) / 1e6;
-        }
-        auto* graph = plot_->addGraph();
-        graph->setData(x, series.value, true);
-        graph->rescaleAxes();
-        // Padding so the curve is not glued to the frame.
-        const double pad = std::abs(plot_->yAxis->range().size()) * 0.05 + 1e-9;
-        plot_->yAxis->setRange(plot_->yAxis->range().lower - pad,
-                               plot_->yAxis->range().upper + pad);
+        // Progressive load: show running row count; keep the busy indicator
+        // visible until the final chunk.
+        statusBar()->showMessage(
+            tr("%1: loading... %2 rows").arg(chunk.key()).arg(
+                valueModel_->series() ? valueModel_->series()->ts.size() : 0));
+        rebuildPlot();
+        return;
     }
-    plot_->xAxis->setLabel(tr("Relative time (s) — %1").arg(series.measurement));
-    plot_->replot();
+
+    busy_->hide();
+    const SeriesData* series = valueModel_->series();
+    if (series == nullptr)
+    {
+        return;
+    }
+    statusBar()->showMessage(
+        tr("%1: %2 points").arg(series->key()).arg(series->ts.size()), 5000);
+    rebuildPlot();
 
     // ---- stats into the plot tooltip --------------------------------------
     double vmin = std::numeric_limits<double>::quiet_NaN();
     double vmax = std::numeric_limits<double>::quiet_NaN();
     double vmean = 0;
     qint64 finite = 0;
-    for (double v : series.value)
+    for (double v : series->value)
     {
         if (std::isnan(v)) continue;
         if (std::isnan(vmin) || v < vmin) vmin = v;
@@ -262,29 +259,56 @@ void MainWindow::showValues(const SeriesData& series)
     }
     if (finite > 0) vmean /= finite;
     QStringList tip;
-    tip << tr("Device: %1").arg(series.device);
-    tip << tr("Points: %1").arg(series.ts.size());
+    tip << tr("Device: %1").arg(series->device);
+    tip << tr("Points: %1").arg(series->ts.size());
     if (finite > 0)
     {
         tip << tr("Min: %1").arg(QString::number(vmin, 'g', 17));
         tip << tr("Max: %1").arg(QString::number(vmax, 'g', 17));
         tip << tr("Mean: %1").arg(QString::number(vmean, 'g', 17));
     }
-    if (finite != series.ts.size())
+    if (finite != series->ts.size())
     {
-        tip << tr("Non-numeric rows: %1").arg(series.ts.size() - finite);
+        tip << tr("Non-numeric rows: %1").arg(series->ts.size() - finite);
     }
     plot_->setToolTip(tip.join(QLatin1Char('\n')));
-    if (!series.ts.isEmpty())
+    if (!series->ts.isEmpty())
     {
         rangeLabel_->setText(tr("Range: %1 s .. %2 s")
-                                 .arg(series.ts.first() / 1e6, 0, 'f', 3)
-                                 .arg(series.ts.last() / 1e6, 0, 'f', 3));
+                                 .arg(series->ts.first() / 1e6, 0, 'f', 3)
+                                 .arg(series->ts.last() / 1e6, 0, 'f', 3));
     }
     else
     {
         rangeLabel_->setText(tr("Range: -"));
     }
+}
+
+void MainWindow::rebuildPlot()
+{
+    const SeriesData* series = valueModel_->series();
+    plot_->clearPlottables();
+    if (series != nullptr && !series->ts.isEmpty())
+    {
+        const qint64 t0 = series->ts.first();
+        QVector<double> x(series->ts.size());
+        for (int i = 0; i < series->ts.size(); ++i)
+        {
+            x[i] = (series->ts[i] - t0) / 1e6;
+        }
+        auto* graph = plot_->addGraph();
+        graph->setData(x, series->value, true);
+        graph->rescaleAxes();
+        // Padding so the curve is not glued to the frame.
+        const double pad = std::abs(plot_->yAxis->range().size()) * 0.05 + 1e-9;
+        plot_->yAxis->setRange(plot_->yAxis->range().lower - pad,
+                               plot_->yAxis->range().upper + pad);
+    }
+    if (series != nullptr)
+    {
+        plot_->xAxis->setLabel(tr("Relative time (s) — %1").arg(series->measurement));
+    }
+    plot_->replot(QCustomPlot::rpQueuedReplot);
 }
 
 void MainWindow::clearContent()
@@ -304,11 +328,17 @@ void MainWindow::onSelectionChanged()
     const QModelIndex sourceIndex = proxy_->mapToSource(proxyIndex);
     if (!ParamTreeModel::isMeasurementRow(sourceIndex))
     {
+        // Device/table group row: nothing to query, say so instead of
+        // looking dead.
+        statusBar()->showMessage(
+            tr("Group selected — pick a parameter under it to load values"),
+            3000);
         return;
     }
     const ParamInfo param = treeModel_->paramAt(sourceIndex);
     if (param.measurement.isEmpty())
     {
+        statusBar()->showMessage(tr("No parameter at this row"), 3000);
         return;
     }
     currentParam_ = param;

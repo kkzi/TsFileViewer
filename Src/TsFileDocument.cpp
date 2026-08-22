@@ -17,11 +17,13 @@
 #undef BOOLEAN
 #endif
 
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QMetaObject>
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 namespace
 {
@@ -209,6 +211,13 @@ public slots:
             return;
         }
 
+        // Supersede check: a newer selection may already be waiting.
+        if (pendingParam_.has_value() && *pendingParam_ != param)
+        {
+            return;  // drop this stale request
+        }
+        pendingParam_.reset();
+
         storage::TsFileReader reader;
         if (reader.open(path_.toStdString()) != common::E_OK)
         {
@@ -250,6 +259,15 @@ public slots:
         bool haveData = false;
         int64_t minTs = std::numeric_limits<int64_t>::max();
         int64_t maxTs = std::numeric_limits<int64_t>::min();
+
+        // Progressive delivery: flush the accumulated rows to the UI every
+        // flushRows rows so the table and plot grow visibly during long
+        // queries instead of freezing until completion.
+        constexpr int kFlushRows = 500000;
+        QElapsedTimer sinceFlush;
+        sinceFlush.start();
+        qint64 totalRows = 0;
+
         bool hasNext = false;
         while (true)
         {
@@ -287,6 +305,26 @@ public slots:
             if (!haveData || ts < minTs) minTs = ts;
             if (!haveData || ts > maxTs) maxTs = ts;
             haveData = true;
+            ++totalRows;
+
+            // Supersede check inside the loop: a new selection aborts this
+            // query early; the already-flushed chunks stay on screen until
+            // the new query's first chunk replaces them.
+            if (pendingParam_.has_value())
+            {
+                reader.destroy_query_data_set(result);
+                reader.close();
+                return;
+            }
+
+            if (out.ts.size() >= kFlushRows && sinceFlush.elapsed() >= 200)
+            {
+                emit valuesChunk(out, /*done=*/false);
+                out.ts.clear();
+                out.value.clear();
+                out.text.clear();
+                sinceFlush.restart();
+            }
         }
         reader.destroy_query_data_set(result);
         reader.close();
@@ -308,7 +346,7 @@ public slots:
             }
         }
 
-        emit valuesReady(out);
+        emit valuesChunk(out, /*done=*/true);
         emit timeRangeKnown(firstTs_, lastTs_, haveRange_);
     }
 
@@ -325,7 +363,7 @@ public slots:
 signals:
     void opened(const MetaInfo& meta, const QVector<ParamInfo>& params);
     void openFailed(const QString& error);
-    void valuesReady(const SeriesData& series);
+    void valuesChunk(const SeriesData& chunk, bool done);
     void queryFailed(const QString& error);
     void timeRangeKnown(qint64 firstTs, qint64 lastTs, bool haveRange);
 
@@ -334,6 +372,11 @@ private:
     bool haveRange_ = false;
     qint64 firstTs_ = 0;
     qint64 lastTs_ = 0;
+    // Set by the UI thread when a new query request arrives while this
+    // worker is still draining a previous one; checked at flush points.
+    std::optional<ParamInfo> pendingParam_;
+
+    friend class TsFileDocument;
 };
 
 #include "TsFileDocument.moc"
@@ -352,8 +395,13 @@ TsFileDocument::TsFileDocument(QObject* parent) : QObject(parent)
     // the worker lives on thread_).
     connect(worker_, &Worker::opened, this, &TsFileDocument::opened);
     connect(worker_, &Worker::openFailed, this, &TsFileDocument::openFailed);
-    connect(worker_, &Worker::valuesReady, this, &TsFileDocument::valuesReady);
+    connect(worker_, &Worker::valuesChunk, this, &TsFileDocument::valuesChunk);
     connect(worker_, &Worker::queryFailed, this, &TsFileDocument::queryFailed);
+    connect(this, &TsFileDocument::supersedeRequested, worker_,
+            [worker = worker_](const ParamInfo& param)
+    {
+        worker->pendingParam_ = param;
+    });
     thread_.start();
 }
 
@@ -373,7 +421,14 @@ void TsFileDocument::openAsync(const QString& path)
 
 void TsFileDocument::queryValuesAsync(const ParamInfo& param)
 {
-    QMetaObject::invokeMethod(worker_, [worker = worker_, param] { worker->query(param); });
+    // Mark the request so a running query can notice it at its next flush
+    // point and abort; the invoke then delivers the new one. The lambda runs
+    // on the worker thread (queued), so pendingParam_ stays single-threaded.
+    emit supersedeRequested(param);
+    QMetaObject::invokeMethod(worker_, [worker = worker_, param]
+    {
+        worker->query(param);
+    });
 }
 
 void TsFileDocument::shutdown()

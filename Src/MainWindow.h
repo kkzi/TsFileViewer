@@ -31,7 +31,8 @@ public:
 private:
     void setupUi();
     void updateMetaBar(const MetaInfo& meta);
-    void showValues(const SeriesData& series);
+    void onValuesChunk(const SeriesData& chunk, bool done);
+    void rebuildPlot();
     void clearContent();
     void onSelectionChanged();
 

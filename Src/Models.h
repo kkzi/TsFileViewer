@@ -47,6 +47,10 @@ public:
     }
 
 private:
+    // True when the top-level row r is the device group owning param p
+    // (params_ groups consecutive entries by device in load order).
+    bool owns(const ParamInfo& p, int topLevelRow) const;
+
     QVector<ParamInfo> params_;
 };
 
@@ -67,6 +71,9 @@ public:
     explicit ValueTableModel(QObject* parent = nullptr);
 
     void setSeries(const SeriesData& series);
+    // Append rows from a chunk (progressive loading). The chunk must belong
+    // to the same series; a different key resets first.
+    void appendChunk(const SeriesData& chunk);
     const SeriesData* series() const { return series_.get(); }
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;

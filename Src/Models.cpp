@@ -119,16 +119,40 @@ ParamInfo ParamTreeModel::paramAt(const QModelIndex& measurementIndex) const
     {
         return {};
     }
-    const QString device = data(parent).toString();
     const QString measurement = data(measurementIndex).toString();
     for (const auto& p : params_)
     {
-        if (p.device == device && p.measurement == measurement)
+        // Compare the measurement plus the owning ParamInfo instead of the
+        // displayed device label (table groups carry a "[table] " prefix).
+        if (p.measurement == measurement && owns(p, parent.row()))
         {
             return p;
         }
     }
     return {};
+}
+
+// Row-based ownership check: the load() loop groups consecutive params by
+// device in the same order, so top-level row r maps to the r-th device run.
+bool ParamTreeModel::owns(const ParamInfo& p, int topLevelRow) const
+{
+    if (topLevelRow < 0)
+    {
+        return false;
+    }
+    QString device;
+    for (const auto& q : params_)
+    {
+        if (q.device != device)
+        {
+            device = q.device;
+            if (--topLevelRow < 0)
+            {
+                return device == p.device;
+            }
+        }
+    }
+    return false;
 }
 
 // ---- ValueTableModel --------------------------------------------------------
@@ -140,6 +164,23 @@ void ValueTableModel::setSeries(const SeriesData& series)
     beginResetModel();
     series_ = std::make_unique<SeriesData>(series);
     endResetModel();
+}
+
+void ValueTableModel::appendChunk(const SeriesData& chunk)
+{
+    if (series_ == nullptr || series_->key() != chunk.key())
+    {
+        setSeries(chunk);
+        return;
+    }
+    const int first = series_->ts.size();
+    const int added = chunk.ts.size();
+    series_->numeric = series_->numeric && chunk.numeric;
+    series_->ts += chunk.ts;
+    series_->value += chunk.value;
+    series_->text += chunk.text;
+    beginInsertRows(QModelIndex(), first, first + added - 1);
+    endInsertRows();
 }
 
 int ValueTableModel::rowCount(const QModelIndex& parent) const

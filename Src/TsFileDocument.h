@@ -27,6 +27,12 @@ struct ParamInfo
     int encoding = 0;     // common::TSEncoding
     int compression = 0;  // common::CompressionType
     QString key() const { return device + QLatin1Char('/') + measurement; }
+    bool operator==(const ParamInfo& o) const
+    {
+        return source == o.source && device == o.device &&
+               measurement == o.measurement;
+    }
+    bool operator!=(const ParamInfo& o) const { return !(*this == o); }
 };
 Q_DECLARE_METATYPE(ParamInfo)
 
@@ -66,8 +72,11 @@ public:
 
     // Async: emits opened(MetaInfo, QVector<ParamInfo>) or openFailed(QString).
     void openAsync(const QString& path);
-    // Async: emits valuesReady(SeriesData) or queryFailed(QString). Queries
-    // queue on the worker thread; the last one wins on the UI side.
+    // Async: emits valuesChunk(SeriesData, bool done) progressively — the
+    // series carries the rows appended since the last chunk; done=true on
+    // the final chunk. queryFailed(QString) on error. Selecting a new
+    // parameter while a query is running supersedes the old one (its
+    // remaining chunks are dropped).
     void queryValuesAsync(const ParamInfo& param);
 
     // Stop the worker and wait. Call before destruction from the UI thread.
@@ -76,8 +85,10 @@ public:
 signals:
     void opened(const MetaInfo& meta, const QVector<ParamInfo>& params);
     void openFailed(const QString& error);
-    void valuesReady(const SeriesData& series);
+    void valuesChunk(const SeriesData& chunk, bool done);
     void queryFailed(const QString& error);
+    // Internal: tell the worker a newer query should supersede a running one.
+    void supersedeRequested(const ParamInfo& param);
 
 private:
     // Worker lives on thread_; owns every reader object.

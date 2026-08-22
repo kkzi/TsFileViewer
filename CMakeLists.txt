@@ -142,7 +142,7 @@ if(WIN32)
     # required by the tsfile headers (STATIC_ASSERT checks __cplusplus >= 201103L,
     # and MSVC reports 199711L without this flag).
     target_link_libraries(${PROJECT_NAME} PRIVATE shell32)
-    target_compile_options(${PROJECT_NAME} PRIVATE /Zc:__cplusplus)
+    target_compile_options(${PROJECT_NAME} PRIVATE /Zc:__cplusplus /utf-8)
 endif()
 
 # Single-config Ninja: runtime output mirrors the sibling repos' layout.
@@ -165,7 +165,7 @@ add_executable(TsFileTableFixture Src/TableFixture.cpp)
 add_dependencies(TsFileTableFixture tsfile-ext)
 target_include_directories(TsFileTableFixture PRIVATE ${TSFILE_INCLUDE_DIR})
 if(WIN32)
-    target_compile_options(TsFileTableFixture PRIVATE /Zc:__cplusplus)
+    target_compile_options(TsFileTableFixture PRIVATE /Zc:__cplusplus /utf-8)
     target_link_libraries(TsFileTableFixture PRIVATE
         ${TSFILE_LIB_DIR}/tsfile.lib
         ${TSFILE_LIB_DIR}/snappy.lib

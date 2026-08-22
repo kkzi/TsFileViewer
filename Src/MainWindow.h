@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QNetworkAccessManager>
 
 #include "TsFileDocument.h"
 
@@ -57,6 +58,9 @@ private:
     void onParamActivated();
     // Query the current parameter at a row-based page (0-based).
     void loadPage(qint64 page);
+    // GitHub releases/latest check; updates versionLabel_ on a newer tag.
+    void checkForUpdate();
+    void updateVersionLabel();
 
     // widgets
     QLineEdit* searchEdit_ = nullptr;
@@ -76,6 +80,10 @@ private:
     QLabel* paramsLabel_ = nullptr;
     QLabel* rangeLabel_ = nullptr;
     QLabel* analysisLabel_ = nullptr;  // status bar: per-parameter analysis
+    QLabel* versionLabel_ = nullptr;   // status bar: v0.1.0 (clickable on update)
+    QString latestVersion_;            // newest tag from GitHub ("" unknown)
+    bool updateAvailable_ = false;
+    QNetworkAccessManager net_{this};  // update check
     QLabel* codecLabel_ = nullptr;     // toolbar: current param's codec
     QLabel* paramNameLabel_ = nullptr; // paging bar: current param name
     class QPushButton* exportBtn_ = nullptr;  // paging bar: CSV export

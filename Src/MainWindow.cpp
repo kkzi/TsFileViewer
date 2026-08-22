@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "Models.h"
+#include "Version.h"
 
 #include <qcustomplot.h>
 
@@ -21,6 +22,9 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QNetworkReply>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QtConcurrent>
@@ -531,16 +535,79 @@ void MainWindow::setupUi()
     });
 
     // ---- status bar --------------------------------------------------------
-    // Right side: parameter analysis. The file label lives in the toolbar,
-    // right after the Open button (see setupUi toolbar section).
+    // Left: version (turns into an "up" link when a newer release exists).
+    // Right: parameter analysis. The file label lives in the toolbar.
+    versionLabel_ = new QLabel(
+        QStringLiteral("v" APP_VERSION), this);
+    versionLabel_->setCursor(Qt::PointingHandCursor);
+    versionLabel_->installEventFilter(this);
+    statusBar()->addWidget(versionLabel_);
+    checkForUpdate();
     analysisLabel_ = new QLabel(QString(), this);
     statusBar()->addPermanentWidget(analysisLabel_);
 
     statusBar()->showMessage(tr("Ready — open a TsFile (*.tsfile) to begin, or double-click a parameter to load values."));
 }
 
+void MainWindow::checkForUpdate()
+{
+    QNetworkReply* reply = net_.get(
+        QNetworkRequest(QUrl(QStringLiteral(APP_RELEASES_API))));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]
+    {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+        {
+            return;  // offline / rate-limited: stay silent
+        }
+        const QByteArray body = reply->readAll();
+        QJsonParseError err{};
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &err);
+        if (err.error != QJsonParseError::NoError || !doc.isObject())
+        {
+            return;
+        }
+        latestVersion_ = doc.object()
+                             .value(QStringLiteral("tag_name"))
+                             .toString()
+                             .remove(QLatin1Char('v'));
+        updateVersionLabel();
+    });
+}
+
+void MainWindow::updateVersionLabel()
+{
+    const QString current = QStringLiteral(APP_VERSION);
+    if (!latestVersion_.isEmpty() && latestVersion_ != current)
+    {
+        updateAvailable_ = true;
+        versionLabel_->setText(
+            tr("v%1 ↑").arg(current));
+        versionLabel_->setToolTip(
+            tr("Version %1 is available — click to open the release page.")
+                .arg(latestVersion_));
+    }
+    else
+    {
+        updateAvailable_ = false;
+        versionLabel_->setText(QStringLiteral("v" APP_VERSION));
+        versionLabel_->setToolTip(QString());
+    }
+}
+
 bool MainWindow::eventFilter(QObject* obj, QEvent* event)
 {
+    // Version label: click opens the release page when an update exists.
+    if (obj == versionLabel_ && updateAvailable_ &&
+        event->type() == QEvent::MouseButtonPress)
+    {
+        auto* me = static_cast<QMouseEvent*>(event);
+        if (me->button() == Qt::LeftButton)
+        {
+            QDesktopServices::openUrl(QUrl(QStringLiteral(APP_RELEASES_URL)));
+            return true;
+        }
+    }
     // Search box: Up/Down move the tree selection (type-to-filter, arrows
     // to pick, Enter loads — no mouse needed).
     if (obj == searchEdit_ && event->type() == QEvent::KeyPress)

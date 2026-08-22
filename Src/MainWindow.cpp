@@ -401,8 +401,13 @@ void MainWindow::rebuildPlot()
         // obvious (sparse/event data especially). With adaptive sampling the
         // library auto-thins markers by pixel density, so dense pages don't
         // overdraw while zoomed-in pages show every sample.
-        graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle,
-                                               QColor(30, 30, 30), 1.0));
+        // Pen + brush: hollow circle with a solid red fill so markers stay
+        // visible against the line at any zoom.
+        graph->setScatterStyle(QCPScatterStyle(
+            QCPScatterStyle::ssCircle,
+            QPen(QColor(180, 30, 30), 1.5),          // outline
+            QBrush(QColor(180, 30, 30, 200)),        // translucent fill
+            5));                                     // diameter in px
         // Fit the view only while the page is still loading (first fit);
         // afterwards keep the user's zoom: re-fitting on every progressive
         // chunk would snap the view back to the full page range and make

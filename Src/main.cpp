@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "Theme.h"
 #include "TsFileDocument.h"
 
 #include <QApplication>
@@ -56,6 +57,8 @@ int main(int argc, char** argv)
         }
     }
 #endif
+
+    theme::apply(app);
 
     MainWindow window;
     window.show();

@@ -70,7 +70,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     connect(doc_, &TsFileDocument::openFailed, this, [this](const QString& error)
     {
         busy_->hide();
-        statusBar()->showMessage(tr("Error: %1").arg(error));
+        statusBar()->showMessage(tr("Failed: %1").arg(error));
         QMessageBox::warning(this, tr("Open failed"), error);
     });
     connect(doc_, &TsFileDocument::valuesChunk, this, &MainWindow::onValuesChunk);
@@ -214,6 +214,21 @@ void MainWindow::setupUi()
     valuesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
     plot_ = new QCustomPlot(right);
+    // Flat monochrome plot matching the app theme: white plot surface,
+    // light grid, black curve, red sample markers stay for data salience.
+    plot_->setBackground(QColor(0xff, 0xff, 0xff));
+    plot_->xAxis->grid()->setPen(QPen(QColor(0xee, 0xf2, 0xf6), 1));
+    plot_->yAxis->grid()->setPen(QPen(QColor(0xee, 0xf2, 0xf6), 1));
+    plot_->xAxis->setBasePen(QPen(QColor(0xc5, 0xce, 0xd8), 1));
+    plot_->yAxis->setBasePen(QPen(QColor(0xc5, 0xce, 0xd8), 1));
+    plot_->xAxis->setTickPen(QPen(QColor(0xc5, 0xce, 0xd8), 1));
+    plot_->yAxis->setTickPen(QPen(QColor(0xc5, 0xce, 0xd8), 1));
+    plot_->xAxis->setSubTickPen(QPen(QColor(0xdd, 0xe3, 0xea), 1));
+    plot_->yAxis->setSubTickPen(QPen(QColor(0xdd, 0xe3, 0xea), 1));
+    plot_->xAxis->setTickLabelColor(QColor(0x66, 0x70, 0x85));
+    plot_->yAxis->setTickLabelColor(QColor(0x66, 0x70, 0x85));
+    plot_->xAxis->setLabelColor(QColor(0x1f, 0x23, 0x28));
+    plot_->yAxis->setLabelColor(QColor(0x1f, 0x23, 0x28));
     plot_->setInteraction(QCP::iRangeDrag, true);
     // Zoom the x axis only: y stays fit to the loaded data, so dense sawtooth
     // waveforms keep a stable amplitude scale while scrolling in time.
@@ -280,7 +295,7 @@ void MainWindow::setupUi()
     analysisLabel_ = new QLabel(QString(), this);
     statusBar()->addPermanentWidget(analysisLabel_);
 
-    statusBar()->showMessage(tr("Ready. Open a .tsfile to begin."));
+    statusBar()->showMessage(tr("Ready — open a TsFile (*.tsfile) to begin, or double-click a parameter to load values."));
 }
 
 void MainWindow::openFile(const QString& path)
@@ -293,7 +308,7 @@ void MainWindow::openFile(const QString& path)
     paramsLabel_->setText(tr("Params: -"));
     rangeLabel_->setText(tr("Range: -"));
     busy_->show();
-    statusBar()->showMessage(tr("Opening %1...").arg(path));
+    statusBar()->showMessage(tr("Opening %1...").arg(QDir::toNativeSeparators(path)));
     doc_->openAsync(path);
 }
 
@@ -535,6 +550,8 @@ void MainWindow::applyScatterSize(QCPGraph* graph, int totalRows)
         Qt::NoPen,                                 // no outline
         QBrush(QColor(Qt::red)),                   // solid red fill
         2));
+    // Black curve on white; matches the monochrome theme.
+    graph->setPen(QPen(QColor(0x1f, 0x23, 0x28), 1));
 }
 
 void MainWindow::onPlotXRangeChanged(const QCPRange&)
@@ -555,7 +572,7 @@ void MainWindow::exportCsv()
     }
     if (exportWatcher_.isRunning())
     {
-        statusBar()->showMessage(tr("An export is already running"), 4000);
+        statusBar()->showMessage(tr("An export is already in progress — please wait for it to finish."), 4000);
         return;
     }
     const QString suggested =
@@ -597,7 +614,7 @@ void MainWindow::exportCsv()
         exportBtn_->setEnabled(true);
         if (ok)
         {
-            statusBar()->showMessage(tr("Export finished"), 5000);
+            statusBar()->showMessage(tr("Export finished — CSV saved."), 5000);
         }
     });
 }
@@ -615,7 +632,7 @@ void MainWindow::onParamActivated()
     if (loading_)
     {
         statusBar()->showMessage(
-            tr("Still loading %1 — wait for it to finish or use another view")
+            tr("Still loading %1 — please wait for the current page to finish.")
                 .arg(currentParam_.key()),
             4000);
         return;
@@ -629,13 +646,13 @@ void MainWindow::onParamActivated()
     if (!ParamTreeModel::isMeasurementRow(sourceIndex))
     {
         statusBar()->showMessage(
-            tr("Group selected — pick a parameter under it to load values"), 3000);
+            tr("This is a group heading — expand it and double-click a parameter to load values."), 4000);
         return;
     }
     const ParamInfo param = treeModel_->paramAt(sourceIndex);
     if (param.measurement.isEmpty())
     {
-        statusBar()->showMessage(tr("No parameter at this row"), 3000);
+        statusBar()->showMessage(tr("Nothing to load here — double-click a parameter (leaf row), not a group heading."), 4000);
         return;
     }
     currentParam_ = param;

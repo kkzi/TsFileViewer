@@ -18,6 +18,7 @@ class QTreeView;
 class ParamProxyModel;
 class ParamTreeModel;
 class ValueTableModel;
+class LoadingOverlay;
 
 // Layout:
 //   toolbar  : metainfo bar (important fields inline, details in tooltip)
@@ -68,6 +69,7 @@ private:
     QTableView* valuesTable_ = nullptr;
     QCustomPlot* plot_ = nullptr;
     QProgressBar* busy_ = nullptr;
+    LoadingOverlay* overlay_ = nullptr;  // translucent loading mask
     class QCPGraph* plotGraph_ = nullptr;  // current curve (marker retuning)
     class QCPItemTracer* tracer_ = nullptr;  // marks the table's selected row
     class QPushButton* prevPage_ = nullptr;

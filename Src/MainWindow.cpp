@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "Models.h"
+#include "LoadingOverlay.h"
 #include "Version.h"
 
 #include <qcustomplot.h>
@@ -65,6 +66,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     doc_ = new TsFileDocument(this);
     setupUi();
+    overlay_ = new LoadingOverlay(this);
 
     connect(doc_, &TsFileDocument::opened, this,
             [this](const MetaInfo& meta, const QVector<ParamInfo>& params)
@@ -78,6 +80,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         updateMetaBar(meta);
         clearContent();
         busy_->hide();
+        overlay_->end();
         if (meta.repaired)
         {
             statusBar()->showMessage(
@@ -94,6 +97,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     connect(doc_, &TsFileDocument::openFailed, this, [this](const QString& error)
     {
         busy_->hide();
+        overlay_->end();
         statusBar()->showMessage(tr("Failed: %1").arg(error));
         QMessageBox::warning(this, tr("Open failed"), error);
     });
@@ -101,6 +105,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
             [this](const QString& path, int code)
     {
         busy_->hide();
+        overlay_->end();
         const auto answer = QMessageBox::question(
             this, tr("File appears incomplete"),
             tr("This TsFile failed to open (code %1) — its tail is likely "
@@ -115,6 +120,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     connect(doc_, &TsFileDocument::queryFailed, this, [this](const QString& error)
     {
         busy_->hide();
+        overlay_->end();
         loading_ = false;
         statusBar()->showMessage(tr("Error: %1").arg(error));
     });
@@ -657,6 +663,7 @@ void MainWindow::openFile(const QString& path)
     paramsLabel_->setText(tr("Params: -"));
     rangeLabel_->setText(tr("Range: -"));
     busy_->show();
+    overlay_->begin();
     statusBar()->showMessage(tr("Opening %1...").arg(QDir::toNativeSeparators(path)));
     doc_->openAsync(path);
 }
@@ -716,6 +723,7 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     }
 
     busy_->hide();
+    overlay_->end();
     loading_ = false;
     const SeriesData* series = valueModel_->series();
     if (series == nullptr)
@@ -972,6 +980,7 @@ void MainWindow::exportCsv()
     statusBar()->showMessage(tr("Exporting %1 ...").arg(path));
     exportBtn_->setEnabled(false);
     busy_->show();
+    overlay_->begin();
     // BlockingQueuedConnection inside runs on the worker thread; QtConcurrent
     // keeps the UI thread free while that happens.
     const ParamInfo param = currentParam_;
@@ -995,6 +1004,7 @@ void MainWindow::exportCsv()
         const bool ok = exportWatcher_.result();
         delete future;
         busy_->hide();
+        overlay_->end();
         exportBtn_->setEnabled(true);
         if (ok)
         {
@@ -1060,6 +1070,7 @@ void MainWindow::loadPage(qint64 page)
     }
     page_ = page;
     loading_ = true;
+    overlay_->begin();
     fitOnNextRebuild_ = true;  // new page: fit the view once, then keep zoom
     busy_->show();
     prevPage_->setEnabled(false);

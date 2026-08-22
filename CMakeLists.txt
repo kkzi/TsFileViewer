@@ -113,7 +113,7 @@ target_link_libraries(qcustomplot PUBLIC
     Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport)
 
 # ---- TsFileViewer -------------------------------------------------------
-file(GLOB SRC_MAIN "Src/main.cpp" "Src/MainWindow.*" "Src/Models.*" "Src/TsFileDocument.*")
+file(GLOB SRC_MAIN "Src/main.cpp" "Src/MainWindow.*" "Src/Models.*" "Src/TsFileDocument.*" "Src/LoadingOverlay.*" "Src/Version.h")
 
 add_executable(${PROJECT_NAME} ${SRC_MAIN})
 # Build the embedded tsfile before linking against its static lib.

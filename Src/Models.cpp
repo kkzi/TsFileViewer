@@ -119,7 +119,10 @@ ParamInfo ParamTreeModel::paramAt(const QModelIndex& measurementIndex) const
     {
         return {};
     }
-    const QString measurement = data(measurementIndex).toString();
+    // Always resolve through column 0 (the name column): the index the view
+    // hands us may be any column (double-click on the Type column etc.).
+    const QModelIndex nameIndex = measurementIndex.sibling(measurementIndex.row(), 0);
+    const QString measurement = data(nameIndex, Qt::DisplayRole).toString();
     for (const auto& p : params_)
     {
         // Compare the measurement plus the owning ParamInfo instead of the

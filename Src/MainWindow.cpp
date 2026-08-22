@@ -126,7 +126,13 @@ void MainWindow::setupUi()
         openBtn->setStyleSheet(
             QStringLiteral("margin-left: 4px; margin-bottom: 4px;"));
     }
-    // Push metainfo to the right side of the toolbar.
+    // File path label right beside the Open button.
+    // Left-click opens the containing folder; right-click copies the path.
+    fileLabel_ = new QLabel(tr("File: -"), toolbar);
+    fileLabel_->setCursor(Qt::PointingHandCursor);
+    fileLabel_->installEventFilter(this);
+    toolbar->addWidget(fileLabel_);
+    // Push the rest of the metainfo to the right side of the toolbar.
     auto* spacer = new QWidget(toolbar);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar->addWidget(spacer);
@@ -345,13 +351,8 @@ void MainWindow::setupUi()
     });
 
     // ---- status bar --------------------------------------------------------
-    // Left side: current file path. Right side: parameter analysis.
-    // (paging + progress moved to the bar above the values table)
-    // Left-click opens the containing folder; right-click copies the path.
-    fileLabel_ = new QLabel(tr("File: -"), this);
-    fileLabel_->setCursor(Qt::PointingHandCursor);
-    fileLabel_->installEventFilter(this);
-    statusBar()->addWidget(fileLabel_);
+    // Right side: parameter analysis. The file label lives in the toolbar,
+    // right after the Open button (see setupUi toolbar section).
     analysisLabel_ = new QLabel(QString(), this);
     statusBar()->addPermanentWidget(analysisLabel_);
 

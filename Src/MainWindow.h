@@ -65,6 +65,7 @@ private:
     QCustomPlot* plot_ = nullptr;
     QProgressBar* busy_ = nullptr;
     class QCPGraph* plotGraph_ = nullptr;  // current curve (marker retuning)
+    class QCPItemTracer* tracer_ = nullptr;  // marks the table's selected row
     class QPushButton* prevPage_ = nullptr;
     class QPushButton* nextPage_ = nullptr;
     class QLabel* pageInfo_ = nullptr;

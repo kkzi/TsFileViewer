@@ -287,6 +287,28 @@ void MainWindow::setupUi()
         plot_->xAxis->setRange(t - span / 2, t + span / 2);
         plot_->replot();
     });
+    // Single selection (click/arrow keys/plot-link): place the tracer on
+    // the selected row's sample.
+    connect(valuesTable_->selectionModel(),
+            &QItemSelectionModel::selectionChanged, this, [this]
+    {
+        const SeriesData* series = valueModel_->series();
+        const QModelIndex cur = valuesTable_->currentIndex();
+        if (series == nullptr || !cur.isValid() ||
+            cur.row() >= series->ts.size() || tracer_ == nullptr)
+        {
+            if (tracer_ != nullptr)
+            {
+                tracer_->setVisible(false);
+                plot_->replot(QCustomPlot::rpQueuedReplot);
+            }
+            return;
+        }
+        tracer_->setVisible(true);
+        tracer_->setGraphKey(
+            static_cast<double>(series->ts[cur.row()]) / 1e6);
+        plot_->replot(QCustomPlot::rpQueuedReplot);
+    });
 
     plot_ = new QCustomPlot(right);
     plot_->legend->setVisible(false);  // no legend
@@ -780,6 +802,16 @@ void MainWindow::rebuildPlot()
         // view holds only a few hundred samples.
         applyScatterSize(graph, series->ts.size());
         plotGraph_ = graph;
+        // Selection tracer: marks the table's current row on the curve.
+        if (tracer_ == nullptr)
+        {
+            tracer_ = new QCPItemTracer(plot_);
+            tracer_->setStyle(QCPItemTracer::tsCircle);
+            tracer_->setSize(10);
+            tracer_->setPen(QPen(QColor(0xd9, 0x30, 0x30), 2));
+            tracer_->setBrush(QBrush(QColor(0xd9, 0x30, 0x30)));
+        }
+        tracer_->setGraph(graph);
         // Fit the view only while the page is still loading (first fit);
         // afterwards keep the user's zoom: re-fitting on every progressive
         // chunk would snap the view back to the full page range and make
@@ -890,6 +922,11 @@ void MainWindow::clearContent()
     valueModel_->setSeries(SeriesData{});
     plot_->clearPlottables();
     plotGraph_ = nullptr;
+    if (tracer_ != nullptr)
+    {
+        tracer_->setGraph(nullptr);
+        tracer_->setVisible(false);
+    }
     plot_->replot();
 }
 

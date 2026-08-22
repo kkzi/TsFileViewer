@@ -141,13 +141,6 @@ void MainWindow::setupUi()
     paramTree_ = new QTreeView(left);
     paramTree_->setModel(proxy_);
     paramTree_->setSortingEnabled(false);
-    // Parameter column stretches to fill; Type column fixed width.
-    // stretchLastSection must be off first: it would otherwise stretch the
-    // Type column (the last one) and fight the per-section Stretch on col 0.
-    paramTree_->header()->setStretchLastSection(false);
-    paramTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    paramTree_->header()->setSectionResizeMode(1, QHeaderView::Fixed);
-    paramTree_->header()->resizeSection(1, 80);
     paramTree_->setUniformRowHeights(true);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(4, 4, 4, 4);
@@ -445,7 +438,7 @@ void MainWindow::applyScatterSize(QCPGraph* graph, int totalRows)
     graph->setScatterStyle(QCPScatterStyle(
         QCPScatterStyle::ssCircle,
         Qt::NoPen,                                 // no outline
-        QBrush(QColor(180, 30, 30)),               // solid fill
+        QBrush(QColor(Qt::red)),                   // solid red fill
         2));
 }
 

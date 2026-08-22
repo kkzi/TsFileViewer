@@ -11,6 +11,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QEvent>
+#include <QKeyEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -196,6 +197,7 @@ void MainWindow::setupUi()
     searchEdit_ = new QLineEdit(left);
     searchEdit_->setPlaceholderText(tr("Search parameter..."));
     searchEdit_->setClearButtonEnabled(true);
+    searchEdit_->installEventFilter(this);  // Up/Down -> tree navigation
     // Deterministic height for the header-alignment math below.
     searchEdit_->setFixedHeight(25);
     treeModel_ = new ParamTreeModel(this);
@@ -499,6 +501,19 @@ void MainWindow::setupUi()
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* event)
 {
+    // Search box: Up/Down move the tree selection (type-to-filter, arrows
+    // to pick, Enter loads — no mouse needed).
+    if (obj == searchEdit_ && event->type() == QEvent::KeyPress)
+    {
+        auto* ke = static_cast<QKeyEvent*>(event);
+        if (ke->key() == Qt::Key_Up || ke->key() == Qt::Key_Down)
+        {
+            QApplication::postEvent(paramTree_,
+                                    new QKeyEvent(ke->type(), ke->key(),
+                                                  ke->modifiers()));
+            return true;
+        }
+    }
     if (obj == fileLabel_ && !currentPath_.isEmpty())
     {
         if (event->type() == QEvent::MouseButtonPress)

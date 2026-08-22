@@ -418,7 +418,22 @@ void MainWindow::setupUi()
     central->setChildrenCollapsible(false);
     setCentralWidget(central);
 
-    connect(searchEdit_, &QLineEdit::textChanged, proxy_, &ParamProxyModel::setFilter);
+    connect(searchEdit_, &QLineEdit::textChanged, this, [this](const QString& text)
+    {
+        proxy_->setFilter(text);
+        // Filtering collapses device nodes when their children are removed
+        // and re-added; re-expand so matched leaves stay visible. Also
+        // auto-select the first match for quick Enter-loading.
+        paramTree_->expandAll();
+        if (!text.isEmpty())
+        {
+            const QModelIndex first = proxy_->index(0, 0);
+            if (first.isValid())
+            {
+                paramTree_->setCurrentIndex(first);
+            }
+        }
+    });
     // Query on explicit activation (double-click / Enter / context menu),
     // not on plain selection: browsing the tree must not fire queries.
     connect(paramTree_, &QTreeView::doubleClicked, this,

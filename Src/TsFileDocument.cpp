@@ -395,6 +395,11 @@ TsFileDocument::TsFileDocument(QObject* parent) : QObject(parent)
     qRegisterMetaType<SeriesData>("SeriesData");
     qRegisterMetaType<QVector<ParamInfo>>("QVector<ParamInfo>");
 
+    // Required before any reader use (allocator + global config); pairs with
+    // libtsfile_destroy() in shutdown(). Without it, readers run on
+    // uninitialized arena state and can return garbage rows.
+    storage::libtsfile_init();
+
     worker_ = new Worker();
     worker_->moveToThread(&thread_);
     connect(&thread_, &QThread::finished, worker_, &QObject::deleteLater);
@@ -444,5 +449,6 @@ void TsFileDocument::shutdown()
     {
         thread_.quit();
         thread_.wait();
+        storage::libtsfile_destroy();
     }
 }

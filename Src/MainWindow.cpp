@@ -59,7 +59,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         paramTree_->expandAll();
         // load() clears the model, which resets the header columns to default
         // widths; re-apply the Parameter column default after each load.
-        paramTree_->header()->resizeSection(0, 250);
+        paramTree_->header()->resizeSection(0, 220);
         updateMetaBar(meta);
         clearContent();
         busy_->hide();
@@ -151,6 +151,34 @@ void MainWindow::setupUi()
     leftLayout->addWidget(paramTree_, 1);
 
     auto* right = new QSplitter(Qt::Vertical, central);
+
+    // Paging + load progress bar, above the values table.
+    auto* pagingBar = new QWidget(right);
+    prevPage_ = new QPushButton(tr("<< Prev"), pagingBar);
+    pageInfo_ = new QLabel(tr("rows 1-0"), pagingBar);
+    nextPage_ = new QPushButton(tr("Next >>"), pagingBar);
+    prevPage_->setFlat(true);
+    nextPage_->setFlat(true);
+    prevPage_->setEnabled(false);
+    nextPage_->setEnabled(false);
+    // Busy-mode bar: the total row count is unknown until the query
+    // finishes, so no percentage — just an active pulse.
+    progress_ = new QProgressBar(pagingBar);
+    progress_->setRange(0, 0);
+    progress_->setTextVisible(false);
+    progress_->setMaximumWidth(160);
+    progress_->setToolTip(tr("Loading..."));
+    progress_->hide();
+    auto* pagingLayout = new QHBoxLayout(pagingBar);
+    pagingLayout->setContentsMargins(4, 0, 4, 0);
+    pagingLayout->addWidget(prevPage_);
+    pagingLayout->addWidget(pageInfo_);
+    pagingLayout->addWidget(nextPage_);
+    pagingLayout->addStretch(1);
+    pagingLayout->addWidget(progress_);
+    connect(prevPage_, &QPushButton::clicked, this, [this] { loadPage(page_ - 1); });
+    connect(nextPage_, &QPushButton::clicked, this, [this] { loadPage(page_ + 1); });
+
     valueModel_ = new ValueTableModel(this);
     valuesTable_ = new QTableView(right);
     valuesTable_->setModel(valueModel_);
@@ -216,30 +244,10 @@ void MainWindow::setupUi()
         menu.exec(paramTree_->viewport()->mapToGlobal(pos));
     });
 
-    // ---- status bar: paging + load progress -------------------------------
-    prevPage_ = new QPushButton(tr("<< Prev"), this);
-    nextPage_ = new QPushButton(tr("Next >>"), this);
-    pageInfo_ = new QLabel(tr("rows 1-0"), this);
-    prevPage_->setFlat(true);
-    nextPage_->setFlat(true);
-    prevPage_->setEnabled(false);
-    nextPage_->setEnabled(false);
-    statusBar()->addPermanentWidget(prevPage_);
-    statusBar()->addPermanentWidget(pageInfo_);
-    statusBar()->addPermanentWidget(nextPage_);
-    connect(prevPage_, &QPushButton::clicked, this, [this] { loadPage(page_ - 1); });
-    connect(nextPage_, &QPushButton::clicked, this, [this] { loadPage(page_ + 1); });
-
-    // Busy-mode bar: the total row count is unknown until the query
-    // finishes, so no percentage is shown — just an active pulse plus the
-    // row count in the status bar text.
-    progress_ = new QProgressBar(this);
-    progress_->setRange(0, 0);
-    progress_->setTextVisible(false);
-    progress_->setMaximumWidth(220);
-    progress_->setToolTip(tr("Loading..."));
-    progress_->hide();
-    statusBar()->addPermanentWidget(progress_);
+    // ---- status bar: parameter analysis ----------------------------------
+    // (paging + progress moved to the bar above the values table)
+    analysisLabel_ = new QLabel(QString(), this);
+    statusBar()->addPermanentWidget(analysisLabel_);
 
     statusBar()->showMessage(tr("Ready. Open a .tsfile to begin."));
 }
@@ -342,7 +350,7 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     }
     rebuildPlot();
 
-    // ---- stats into the plot tooltip --------------------------------------
+    // ---- stats: plot tooltip + status-bar analysis -------------------------
     double vmin = std::numeric_limits<double>::quiet_NaN();
     double vmax = std::numeric_limits<double>::quiet_NaN();
     double vmean = 0;
@@ -356,6 +364,58 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
         ++finite;
     }
     if (finite > 0) vmean /= finite;
+
+    // Status-bar analysis: SFID counters report the wrap behavior, others
+    // report min/max/mean.
+    if (series->measurement.endsWith(QLatin1String("SFID"), Qt::CaseSensitive))
+    {
+        qint64 inc1 = 0, wraps = 0, violations = 0;
+        double prev = std::numeric_limits<double>::quiet_NaN();
+        for (double v : series->value)
+        {
+            if (std::isnan(v)) continue;
+            if (!std::isnan(prev))
+            {
+                const double d = v - prev;
+                if (d == 1.0)
+                {
+                    ++inc1;
+                }
+                else if (v < prev)  // wrap: decreases -> restart from min
+                {
+                    ++wraps;
+                }
+                else
+                {
+                    ++violations;
+                }
+            }
+            prev = v;
+        }
+        analysisLabel_->setText(
+            tr("SFID: %1/%2 steps +1, %3 wrap(s) to min, %4 other step(s)"
+               "  |  range %5..%6")
+                .arg(inc1)
+                .arg(finite - (finite > 0 ? 1 : 0))
+                .arg(wraps)
+                .arg(violations)
+                .arg(QString::number(vmin, 'g', 17))
+                .arg(QString::number(vmax, 'g', 17)));
+    }
+    else if (finite > 0)
+    {
+        analysisLabel_->setText(
+            tr("min=%1  max=%2  mean=%3  n=%4")
+                .arg(QString::number(vmin, 'g', 17))
+                .arg(QString::number(vmax, 'g', 17))
+                .arg(QString::number(vmean, 'g', 17))
+                .arg(finite));
+    }
+    else
+    {
+        analysisLabel_->setText(QString());
+    }
+
     QStringList tip;
     tip << tr("Device: %1").arg(series->device);
     tip << tr("Points: %1").arg(series->ts.size());

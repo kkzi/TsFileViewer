@@ -66,6 +66,7 @@ private:
     QLabel* tablesLabel_ = nullptr;
     QLabel* paramsLabel_ = nullptr;
     QLabel* rangeLabel_ = nullptr;
+    QLabel* analysisLabel_ = nullptr;  // status bar: per-parameter analysis
 
     // models / data
     TsFileDocument* doc_ = nullptr;

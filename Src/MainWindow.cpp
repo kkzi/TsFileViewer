@@ -11,6 +11,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QSplitter>
@@ -70,6 +71,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     connect(doc_, &TsFileDocument::queryFailed, this, [this](const QString& error)
     {
         busy_->hide();
+        progress_->hide();
+        loading_ = false;
         statusBar()->showMessage(tr("Error: %1").arg(error));
     });
 }
@@ -172,8 +175,40 @@ void MainWindow::setupUi()
     setCentralWidget(central);
 
     connect(searchEdit_, &QLineEdit::textChanged, proxy_, &ParamProxyModel::setFilter);
-    connect(paramTree_->selectionModel(), &QItemSelectionModel::selectionChanged, this,
-            &MainWindow::onSelectionChanged);
+    // Query on explicit activation (double-click / Enter / context menu),
+    // not on plain selection: browsing the tree must not fire queries.
+    connect(paramTree_, &QTreeView::doubleClicked, this,
+            &MainWindow::onParamActivated);
+    auto* activateAct = new QAction(tr("Load values"), this);
+    activateAct->setShortcut(Qt::Key_Return);
+    addAction(activateAct);
+    connect(activateAct, &QAction::triggered, this, &MainWindow::onParamActivated);
+    paramTree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(paramTree_, &QTreeView::customContextMenuRequested, this,
+            [this, activateAct](const QPoint& pos)
+    {
+        const QModelIndex index = paramTree_->indexAt(pos);
+        if (!index.isValid())
+        {
+            return;
+        }
+        paramTree_->setCurrentIndex(index);
+        QMenu menu(this);
+        menu.addAction(activateAct);
+        menu.exec(paramTree_->viewport()->mapToGlobal(pos));
+    });
+
+    // ---- status bar: load progress -----------------------------------------
+    // Busy-mode bar: the total row count is unknown until the query
+    // finishes, so no percentage is shown — just an active pulse plus the
+    // row count in the status bar text.
+    progress_ = new QProgressBar(this);
+    progress_->setRange(0, 0);
+    progress_->setTextVisible(false);
+    progress_->setMaximumWidth(220);
+    progress_->setToolTip(tr("Loading..."));
+    progress_->hide();
+    statusBar()->addPermanentWidget(progress_);
 
     statusBar()->showMessage(tr("Ready. Open a .tsfile to begin."));
 }
@@ -225,16 +260,21 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     valueModel_->appendChunk(chunk);
     if (!done)
     {
-        // Progressive load: show running row count; keep the busy indicator
-        // visible until the final chunk.
+        // Progressive load: running row count in the status bar. The total
+        // row count is unknown until the query completes, so the progress
+        // bar stays in busy mode (no fake percentage).
+        const SeriesData* series = valueModel_->series();
         statusBar()->showMessage(
-            tr("%1: loading... %2 rows").arg(chunk.key()).arg(
-                valueModel_->series() ? valueModel_->series()->ts.size() : 0));
+            tr("%1: loading... %2 rows")
+                .arg(chunk.key())
+                .arg(series ? series->ts.size() : chunk.ts.size()));
         rebuildPlot();
         return;
     }
 
     busy_->hide();
+    progress_->hide();
+    loading_ = false;
     const SeriesData* series = valueModel_->series();
     if (series == nullptr)
     {
@@ -318,8 +358,16 @@ void MainWindow::clearContent()
     plot_->replot();
 }
 
-void MainWindow::onSelectionChanged()
+void MainWindow::onParamActivated()
 {
+    if (loading_)
+    {
+        statusBar()->showMessage(
+            tr("Still loading %1 — wait for it to finish or use another view")
+                .arg(currentParam_.key()),
+            4000);
+        return;
+    }
     const QModelIndex proxyIndex = paramTree_->currentIndex();
     if (!proxyIndex.isValid())
     {
@@ -328,11 +376,8 @@ void MainWindow::onSelectionChanged()
     const QModelIndex sourceIndex = proxy_->mapToSource(proxyIndex);
     if (!ParamTreeModel::isMeasurementRow(sourceIndex))
     {
-        // Device/table group row: nothing to query, say so instead of
-        // looking dead.
         statusBar()->showMessage(
-            tr("Group selected — pick a parameter under it to load values"),
-            3000);
+            tr("Group selected — pick a parameter under it to load values"), 3000);
         return;
     }
     const ParamInfo param = treeModel_->paramAt(sourceIndex);
@@ -342,7 +387,9 @@ void MainWindow::onSelectionChanged()
         return;
     }
     currentParam_ = param;
+    loading_ = true;
     busy_->show();
+    progress_->show();
     statusBar()->showMessage(tr("Querying %1...").arg(param.key()));
     doc_->queryValuesAsync(param);
 }

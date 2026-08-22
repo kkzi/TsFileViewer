@@ -16,10 +16,15 @@ class ParamProxyModel;
 class ParamTreeModel;
 class ValueTableModel;
 
-// Layout per review:
+// Layout:
 //   toolbar  : metainfo bar (important fields inline, details in tooltip)
 //   left     : search + param tree (device > measurement)
 //   right    : values table (top) / plot (bottom)
+//   statusbar: load progress (busy mode while a query streams)
+//
+// Queries start on explicit activation (double-click / Enter / context menu
+// "Load values"); plain selection only highlights, so browsing the tree
+// never fires a query.
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -34,7 +39,8 @@ private:
     void onValuesChunk(const SeriesData& chunk, bool done);
     void rebuildPlot();
     void clearContent();
-    void onSelectionChanged();
+    // Double-click / Enter / context-menu action on the param tree.
+    void onParamActivated();
 
     // widgets
     QLineEdit* searchEdit_ = nullptr;
@@ -42,6 +48,7 @@ private:
     QTableView* valuesTable_ = nullptr;
     QCustomPlot* plot_ = nullptr;
     QProgressBar* busy_ = nullptr;
+    QProgressBar* progress_ = nullptr;  // status bar load indicator
 
     // toolbar labels: important info inline, the rest in tooltips
     QLabel* fileLabel_ = nullptr;
@@ -56,4 +63,5 @@ private:
     ParamProxyModel* proxy_ = nullptr;
     ValueTableModel* valueModel_ = nullptr;
     ParamInfo currentParam_;
+    bool loading_ = false;  // a query is streaming (guards re-trigger)
 };

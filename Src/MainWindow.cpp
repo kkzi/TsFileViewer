@@ -310,6 +310,56 @@ void MainWindow::setupUi()
     plot_->axisRect()->setRangeZoomAxes(plot_->xAxis, nullptr);
     plot_->axisRect()->setRangeDragAxes(plot_->xAxis, nullptr);
     plot_->setNoAntialiasingOnDrag(true);
+    // Plot -> table link: clicking near a curve sample centers that row in
+    // the values table (finds the nearest sample by x, O(log) via bisection
+    // since ts is sorted).
+    connect(plot_, &QCustomPlot::mousePress, this, [this](QMouseEvent* ev)
+    {
+        if (ev->button() != Qt::LeftButton)
+        {
+            return;
+        }
+        const SeriesData* series = valueModel_->series();
+        if (series == nullptr || series->ts.isEmpty() || plotGraph_ == nullptr)
+        {
+            return;
+        }
+        // Only when the click is on the graph (its selectable scatter).
+        const double x = plot_->xAxis->pixelToCoord(ev->pos().x());
+        const double y = plot_->yAxis->pixelToCoord(ev->pos().y());
+        // selectTest returns the pixel distance to the curve; treat
+        // <=8px as "on the curve" so plain background drags don't jump.
+        if (plotGraph_->selectTest(ev->pos(), false) > 8.0)
+        {
+            return;  // click not on the curve: plain drag, no table jump
+        }
+        // Nearest sample by bisection on ts (sorted ascending).
+        int lo = 0, hi = series->ts.size() - 1;
+        const double tx = x * 1e6;  // back to us
+        while (lo < hi)
+        {
+            const int mid = (lo + hi) / 2;
+            if (static_cast<double>(series->ts[mid]) < tx)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        // lo is the first >= tx; check lo-1 too for the true nearest.
+        int row = lo;
+        if (lo > 0 &&
+            std::abs(static_cast<double>(series->ts[lo - 1]) - tx) <
+                std::abs(static_cast<double>(series->ts[lo]) - tx))
+        {
+            row = lo - 1;
+        }
+        const QModelIndex idx = valueModel_->index(row, 1);
+        valuesTable_->setCurrentIndex(idx);
+        valuesTable_->scrollTo(idx, QAbstractItemView::PositionAtCenter);
+    });
     // Fixed-precision seconds on the x axis (no scientific notation). 6
     // decimals = microsecond resolution; when the view spans hundreds of
     // seconds the decimals are noise, so precision adapts to the zoom level.

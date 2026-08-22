@@ -251,6 +251,7 @@ void MainWindow::setupUi()
     valuesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
     plot_ = new QCustomPlot(right);
+    plot_->legend->setVisible(false);  // no legend
     // Flat monochrome plot matching the app theme: white plot surface,
     // light grid, black curve, red sample markers stay for data salience.
     plot_->setBackground(QColor(0xff, 0xff, 0xff));

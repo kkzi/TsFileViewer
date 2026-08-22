@@ -24,6 +24,7 @@
 #include <QPushButton>
 #include <QtConcurrent>
 #include <QSplitter>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableView>
 #include <QToolBar>
@@ -102,8 +103,18 @@ void MainWindow::setupUi()
     openAct->setShortcut(QKeySequence::Open);  // Ctrl+O
     connect(openAct, &QAction::triggered, this, [this]
     {
+        // Start where the current file lives; fall back to the desktop.
+        QString startDir;
+        if (!currentPath_.isEmpty())
+        {
+            startDir = QFileInfo(currentPath_).absolutePath();
+        }
+        if (startDir.isEmpty() || !QDir(startDir).exists())
+        {
+            startDir = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+        }
         const QString path = QFileDialog::getOpenFileName(
-            this, tr("Open TsFile"), QString(),
+            this, tr("Open TsFile"), startDir,
             tr("TsFile (*.tsfile);;All files (*.*)"));
         if (!path.isEmpty())
         {

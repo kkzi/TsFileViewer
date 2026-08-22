@@ -293,12 +293,18 @@ void MainWindow::setupUi()
     right->setSizes({320, 320});
     right->setCollapsible(0, false);
     right->setCollapsible(1, false);
+    right->setChildrenCollapsible(false);
 
     central->addWidget(left);
     central->addWidget(rightPane);
-    central->setStretchFactor(0, 1);
-    central->setStretchFactor(1, 3);
+    // Window resize grows only the right pane; the parameter tree keeps
+    // its width (stretch 0), and neither pane may be collapsed by dragging.
+    central->setStretchFactor(0, 0);
+    central->setStretchFactor(1, 1);
     central->setSizes({340, 940});
+    central->setCollapsible(0, false);
+    central->setCollapsible(1, false);
+    central->setChildrenCollapsible(false);
     setCentralWidget(central);
 
     connect(searchEdit_, &QLineEdit::textChanged, proxy_, &ParamProxyModel::setFilter);

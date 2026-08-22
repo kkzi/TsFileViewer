@@ -111,11 +111,6 @@ void MainWindow::setupUi()
     toolbar->addWidget(codecLabel_);
     addSep();
 
-    fileLabel_ = new QLabel(tr("File: -"), toolbar);
-    fileLabel_->setMinimumWidth(140);
-    toolbar->addWidget(fileLabel_);
-    addSep();
-
     devicesLabel_ = new QLabel(tr("Devices: -"), toolbar);
     toolbar->addWidget(devicesLabel_);
     addSep();
@@ -255,8 +250,11 @@ void MainWindow::setupUi()
         menu.exec(paramTree_->viewport()->mapToGlobal(pos));
     });
 
-    // ---- status bar: parameter analysis ----------------------------------
+    // ---- status bar --------------------------------------------------------
+    // Left side: current file path. Right side: parameter analysis.
     // (paging + progress moved to the bar above the values table)
+    fileLabel_ = new QLabel(tr("File: -"), this);
+    statusBar()->addWidget(fileLabel_);
     analysisLabel_ = new QLabel(QString(), this);
     statusBar()->addPermanentWidget(analysisLabel_);
 

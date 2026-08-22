@@ -263,10 +263,28 @@ void MainWindow::setupUi()
     valuesTable_ = new QTableView(right);
     valuesTable_->setModel(valueModel_);
     valuesTable_->horizontalHeader()->setStretchLastSection(true);
+    valuesTable_->horizontalHeader()->resizeSection(1, 160);  // Time column
     valuesTable_->verticalHeader()->setDefaultSectionSize(20);
     valuesTable_->verticalHeader()->hide();  // No column shows row numbers (No column exists)
     valuesTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     valuesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // Double-click a row: center that sample in the plot and zoom in.
+    connect(valuesTable_, &QTableView::doubleClicked, this,
+            [this](const QModelIndex& idx)
+    {
+        const SeriesData* series = valueModel_->series();
+        if (series == nullptr || !idx.isValid() ||
+            idx.row() >= series->ts.size())
+        {
+            return;
+        }
+        const double t = static_cast<double>(series->ts[idx.row()]) / 1e6;
+        // Center on the point with a ~200ms view (a few sawtooth periods
+        // at typical sample rates); if already tighter, keep the span.
+        const double span = std::min(plot_->xAxis->range().size(), 0.2);
+        plot_->xAxis->setRange(t - span / 2, t + span / 2);
+        plot_->replot();
+    });
 
     plot_ = new QCustomPlot(right);
     plot_->legend->setVisible(false);  // no legend
@@ -520,6 +538,8 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     // the series total (when the metadata provided it) yields the page count.
     const qint64 first = series->offset + 1;
     const qint64 last = series->offset + series->ts.size();
+    // Model resets (page change) restore default column widths; re-apply.
+    valuesTable_->horizontalHeader()->resizeSection(1, 160);
     if (series->totalRows > 0)
     {
         const qint64 totalPages =

@@ -1,11 +1,11 @@
 #pragma once
 
-#include <QVariantAnimation>
 #include <QWidget>
 
 // Semi-transparent overlay shown over the whole window during long
-// operations (file open, page turns, parameter switches). Clicks pass
-// through to nothing (modal feel) while visible.
+// operations (file open, page turns, parameter switches, export).
+// Static: scrim + centered "Loading..." text on a soft backing panel;
+// no animation.
 class LoadingOverlay : public QWidget
 {
     Q_OBJECT
@@ -14,15 +14,6 @@ public:
         : QWidget(host), host_(host)
     {
         setAttribute(Qt::WA_TransparentForMouseEvents, false);
-        spin_.setStartValue(0);
-        spin_.setEndValue(360);
-        spin_.setDuration(900);
-        spin_.setLoopCount(-1);
-        connect(&spin_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v)
-        {
-            angle_ = v.toInt();
-            update();
-        });
         hide();
     }
 
@@ -35,12 +26,11 @@ public:
         setGeometry(host_->rect());
         raise();
         show();
-        spin_.start();
+        update();
     }
 
     void end()
     {
-        spin_.stop();
         hide();
     }
 
@@ -59,6 +49,4 @@ protected:
 
 private:
     QWidget* host_;
-    QVariantAnimation spin_;
-    int angle_ = 0;
 };

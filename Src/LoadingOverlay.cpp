@@ -1,7 +1,7 @@
 #include "LoadingOverlay.h"
 
+#include <QFontMetrics>
 #include <QPainter>
-#include <QPainterPath>
 
 void LoadingOverlay::paintEvent(QPaintEvent*)
 {
@@ -9,20 +9,25 @@ void LoadingOverlay::paintEvent(QPaintEvent*)
     // White translucent scrim, flat (no gradient).
     p.fillRect(rect(), QColor(255, 255, 255, 96));
 
-    // Centered black spinner ring.
-    const int r = 14;
-    const QRectF circle = QRectF(QPointF(width() / 2.0 - r, height() / 2.0 - r),
-                                 QSizeF(2 * r, 2 * r));
-    QPen pen(QColor(0x11, 0x14, 0x18), 3);
-    pen.setCapStyle(Qt::FlatCap);
-    p.setPen(pen);
-    p.translate(circle.center());
-    p.rotate(angle_);
-    p.translate(-circle.center());
-    p.drawArc(circle, 30 * 16, 300 * 16);
+    // Text on a near-opaque white panel so it stays legible over any
+    // underlying content. Panel hugs the text with symmetric padding.
+    QFont f = font();
+    f.setPointSizeF(f.pointSizeF() * 1.15);
+    f.setBold(true);
+    const QString text = tr("Loading...");
+    const QFontMetrics fm(f);
+    const int textW = fm.horizontalAdvance(text);
+    const int textH = fm.height();
+    const int padX = 18, padY = 10;
+    const QRect panel(0, 0, textW + 2 * padX, textH + 2 * padY);
+    const QRect panelRect(width() / 2 - panel.width() / 2,
+                          height() / 2 - panel.height() / 2,
+                          panel.width(), panel.height());
 
-    p.setPen(QPen(QColor(0x11, 0x14, 0x18)));
-    p.setFont(font());
-    p.drawText(rect().adjusted(0, 2 * r + 12, 0, 0),
-               Qt::AlignHCenter | Qt::AlignTop, tr("Loading..."));
+    p.fillRect(panelRect, QColor(255, 255, 255, 235));
+    p.setPen(QPen(QColor(0x11, 0x14, 0x18), 1));
+    p.drawRect(panelRect);
+    p.setFont(f);
+    p.setPen(QColor(0x11, 0x14, 0x18));
+    p.drawText(panelRect, Qt::AlignCenter, text);
 }

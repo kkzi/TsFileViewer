@@ -157,6 +157,7 @@ void MainWindow::setupUi()
     valuesTable_->setModel(valueModel_);
     valuesTable_->horizontalHeader()->setStretchLastSection(true);
     valuesTable_->verticalHeader()->setDefaultSectionSize(20);
+    valuesTable_->verticalHeader()->hide();  // No column shows row numbers (No column exists)
     valuesTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     valuesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 

@@ -83,6 +83,13 @@ public:
     static constexpr qint64 kPageSize = 1000000;
     void queryValuesAsync(const ParamInfo& param, qint64 page = 0);
 
+    // Export the parameter's FULL series (all rows, ignoring paging) to a
+    // UTF-8 CSV: header "Time,Value", plain decimal (no scientific).
+    // Returns false on error (errorText set). Runs synchronously on the
+    // worker thread pool — call from a QtConcurrent job, not the UI thread.
+    bool exportCsvBlocking(const ParamInfo& param, const QString& csvPath,
+                           QString* errorText = nullptr);
+
     // Stop the worker and wait. Call before destruction from the UI thread.
     void shutdown();
 

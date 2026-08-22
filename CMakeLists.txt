@@ -108,7 +108,7 @@ set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 target_include_directories(qcustomplot PUBLIC
     "${QCUSTOMPLOT_DIR}/lib"
     "${CMAKE_BINARY_DIR}/qcustomplot-config")
-find_package(Qt5 COMPONENTS Core Gui Widgets PrintSupport REQUIRED)
+find_package(Qt5 COMPONENTS Core Gui Widgets PrintSupport Concurrent REQUIRED)
 target_link_libraries(qcustomplot PUBLIC
     Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport)
 
@@ -141,6 +141,7 @@ if(WIN32)
         Qt5::Core
         Qt5::Gui
         Qt5::Widgets
+        Qt5::Concurrent
     )
 else()
     # POSIX: static lib lands under lib/ with a lib*.a naming; zlib has no

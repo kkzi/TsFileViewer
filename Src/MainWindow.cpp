@@ -5,6 +5,7 @@
 #include <qcustomplot.h>
 
 #include <QAction>
+#include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -15,6 +16,7 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QtConcurrent>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTableView>
@@ -161,14 +163,20 @@ void MainWindow::setupUi()
     rightLayout->setSpacing(0);
     auto* right = new QSplitter(Qt::Vertical, rightPane);
 
-    // Paging + load progress bar. Fixed 25px, outside any splitter.
+    // Paging bar. Fixed 25px, outside any splitter.
+    // Layout: param name | stretch | export | <<prev rows next>> | progress
     auto* pagingBar = new QWidget(rightPane);
     pagingBar->setFixedHeight(25);
+    paramNameLabel_ = new QLabel(QString(), pagingBar);
+    paramNameLabel_->setMinimumWidth(120);
+    exportBtn_ = new QPushButton(tr("Export"), pagingBar);
+    exportBtn_->setFlat(true);
     prevPage_ = new QPushButton(tr("<< Prev"), pagingBar);
     pageInfo_ = new QLabel(tr("rows 1-0"), pagingBar);
     nextPage_ = new QPushButton(tr("Next >>"), pagingBar);
     prevPage_->setFlat(true);
     nextPage_->setFlat(true);
+    exportBtn_->setEnabled(false);
     prevPage_->setEnabled(false);
     nextPage_->setEnabled(false);
     // Busy-mode bar: the total row count is unknown until the query
@@ -182,13 +190,16 @@ void MainWindow::setupUi()
     auto* pagingLayout = new QHBoxLayout(pagingBar);
     pagingLayout->setContentsMargins(4, 0, 4, 0);
     pagingLayout->setSpacing(4);
+    pagingLayout->addWidget(paramNameLabel_);
+    pagingLayout->addStretch(1);
+    pagingLayout->addWidget(exportBtn_);
     pagingLayout->addWidget(prevPage_);
     pagingLayout->addWidget(pageInfo_);
     pagingLayout->addWidget(nextPage_);
-    pagingLayout->addStretch(1);
     pagingLayout->addWidget(progress_);
     connect(prevPage_, &QPushButton::clicked, this, [this] { loadPage(page_ - 1); });
     connect(nextPage_, &QPushButton::clicked, this, [this] { loadPage(page_ + 1); });
+    connect(exportBtn_, &QPushButton::clicked, this, &MainWindow::exportCsv);
 
     rightLayout->addWidget(pagingBar);
     rightLayout->addWidget(right, 1);
@@ -350,6 +361,7 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
                            .arg(series->hasMore ? QStringLiteral("+") : QString()));
     prevPage_->setEnabled(series->offset > 0);
     nextPage_->setEnabled(series->hasMore);
+    exportBtn_->setEnabled(true);
     if (series->hasMore)
     {
         statusBar()->showMessage(
@@ -535,6 +547,61 @@ void MainWindow::onPlotXRangeChanged(const QCPRange&)
     plot_->replot(QCustomPlot::rpQueuedReplot);
 }
 
+void MainWindow::exportCsv()
+{
+    if (currentParam_.measurement.isEmpty() || loading_)
+    {
+        return;
+    }
+    if (exportWatcher_.isRunning())
+    {
+        statusBar()->showMessage(tr("An export is already running"), 4000);
+        return;
+    }
+    const QString suggested =
+        currentParam_.measurement + QLatin1Char('_') +
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd hhmmss")) +
+        QStringLiteral(".csv");
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export CSV"), suggested, tr("CSV (*.csv);;All files (*.*)"));
+    if (path.isEmpty())
+    {
+        return;
+    }
+    statusBar()->showMessage(tr("Exporting %1 ...").arg(path));
+    exportBtn_->setEnabled(false);
+    busy_->show();
+    // BlockingQueuedConnection inside runs on the worker thread; QtConcurrent
+    // keeps the UI thread free while that happens.
+    const ParamInfo param = currentParam_;
+    auto* future = new QFuture<bool>();
+    *future = QtConcurrent::run([this, param, path]() -> bool
+    {
+        QString err;
+        const bool ok = doc_->exportCsvBlocking(param, path, &err);
+        if (!ok)
+        {
+            QMetaObject::invokeMethod(this, [this, err]
+            {
+                statusBar()->showMessage(tr("Export failed: %1").arg(err));
+            }, Qt::QueuedConnection);
+        }
+        return ok;
+    });
+    exportWatcher_.setFuture(*future);
+    connect(&exportWatcher_, &QFutureWatcher<bool>::finished, this, [this, future]
+    {
+        const bool ok = exportWatcher_.result();
+        delete future;
+        busy_->hide();
+        exportBtn_->setEnabled(true);
+        if (ok)
+        {
+            statusBar()->showMessage(tr("Export finished"), 5000);
+        }
+    });
+}
+
 void MainWindow::clearContent()
 {
     valueModel_->setSeries(SeriesData{});
@@ -572,6 +639,7 @@ void MainWindow::onParamActivated()
         return;
     }
     currentParam_ = param;
+    paramNameLabel_->setText(param.measurement);
     codecLabel_->setText(tr("Codec: %1 / %2")
                              .arg(TsFileNames::encoding(param.encoding),
                                   TsFileNames::compression(param.compression)));

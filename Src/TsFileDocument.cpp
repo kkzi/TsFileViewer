@@ -18,10 +18,13 @@
 #endif
 
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <optional>
 
@@ -374,6 +377,94 @@ signals:
     void queryFailed(const QString& error);
     void timeRangeKnown(qint64 firstTs, qint64 lastTs, bool haveRange);
 
+public:
+    // Full-series CSV export (blocking; called via BlockingQueuedConnection).
+    bool exportCsv(const ParamInfo& param, const QString& csvPath,
+                   QString* errorText)
+    {
+        if (path_.isEmpty())
+        {
+            if (errorText) *errorText = QStringLiteral("no file open");
+            return false;
+        }
+        QFile f(pathbridge::toLibPath(csvPath));
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        {
+            if (errorText)
+                *errorText = QStringLiteral("cannot create %1").arg(csvPath);
+            return false;
+        }
+        storage::TsFileReader reader;
+        if (reader.open(path_.toStdString()) != common::E_OK)
+        {
+            if (errorText) *errorText = QStringLiteral("open failed");
+            return false;
+        }
+        storage::ResultSet* result = nullptr;
+        int q = common::E_OK;
+        if (param.source == ParamSource::Table)
+        {
+            q = reader.query(param.device.toStdString(),
+                             {param.measurement.toStdString()},
+                             std::numeric_limits<int64_t>::min(),
+                             std::numeric_limits<int64_t>::max(), result);
+        }
+        else
+        {
+            std::vector<std::string> pathList{
+                param.device.toStdString() + "." + param.measurement.toStdString()};
+            q = reader.query(pathList, std::numeric_limits<int64_t>::min(),
+                             std::numeric_limits<int64_t>::max(), result);
+        }
+        if (q != common::E_OK || result == nullptr)
+        {
+            reader.close();
+            if (errorText)
+                *errorText = QStringLiteral("query failed (code %1)").arg(q);
+            return false;
+        }
+
+        f.write("Time,Value\n");
+        bool hn = false;
+        qint64 rows = 0;
+        // Fixed-precision formatting, no scientific notation: values are
+        // formatted with up to 17 significant digits in plain decimal and
+        // trailing zeros trimmed.
+        while (result->next(hn) == common::E_OK && hn)
+        {
+            storage::RowRecord* row = result->get_row_record();
+            if (row == nullptr) continue;
+            const int64_t ts = row->get_field(0)->get_value<int64_t>();
+            double v = std::numeric_limits<double>::quiet_NaN();
+            QString text;
+            fieldToValues(row->get_field(1), v, text);
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%lld,", (long long)ts);
+            f.write(buf);
+            if (!text.isEmpty())
+            {
+                f.write(text.toUtf8());
+            }
+            else
+            {
+                // %.17f would force 17 decimals; %g switches to scientific
+                // for large/small exponents. Use snprintf %f with enough
+                // digits, then trim trailing zeros.
+                std::snprintf(buf, sizeof(buf), "%.10f", v);
+                char* end = buf + std::strlen(buf) - 1;
+                while (end > buf && *end == '0') *end-- = '\0';
+                if (*end == '.') *end = '\0';
+                f.write(buf);
+            }
+            f.write("\n");
+            ++rows;
+        }
+        reader.destroy_query_data_set(result);
+        reader.close();
+        f.close();
+        return f.error() == QFile::NoError;
+    }
+
 private:
     QString path_;
     bool haveRange_ = false;
@@ -431,8 +522,7 @@ void TsFileDocument::openAsync(const QString& path)
     });
 }
 
-void TsFileDocument::queryValuesAsync(const ParamInfo& param, qint64 page)
-{
+void TsFileDocument::queryValuesAsync(const ParamInfo& param, qint64 page){
     // Mark the request so a running query can notice it at its next flush
     // point and abort; the invoke then delivers the new one. The lambda runs
     // on the worker thread (queued), so pendingParam_ stays single-threaded.
@@ -441,6 +531,23 @@ void TsFileDocument::queryValuesAsync(const ParamInfo& param, qint64 page)
     {
         worker->query(param, page);
     });
+}
+
+bool TsFileDocument::exportCsvBlocking(const ParamInfo& param,
+                                       const QString& csvPath,
+                                       QString* errorText)
+{
+    // Runs on the worker thread (queued): one full-range query, rows written
+    // straight to disk so memory stays bounded regardless of series size.
+    bool ok = false;
+    QMetaObject::invokeMethod(
+        worker_,
+        [worker = worker_, param, csvPath, errorText, &ok]
+        {
+            ok = worker->exportCsv(param, csvPath, errorText);
+        },
+        Qt::BlockingQueuedConnection);
+    return ok;
 }
 
 void TsFileDocument::shutdown()

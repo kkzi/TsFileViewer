@@ -142,6 +142,9 @@ void MainWindow::setupUi()
     paramTree_->setModel(proxy_);
     paramTree_->setSortingEnabled(false);
     // Parameter column stretches to fill; Type column fixed width.
+    // stretchLastSection must be off first: it would otherwise stretch the
+    // Type column (the last one) and fight the per-section Stretch on col 0.
+    paramTree_->header()->setStretchLastSection(false);
     paramTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     paramTree_->header()->setSectionResizeMode(1, QHeaderView::Fixed);
     paramTree_->header()->resizeSection(1, 80);
@@ -441,9 +444,9 @@ void MainWindow::applyScatterSize(QCPGraph* graph, int totalRows)
     Q_UNUSED(totalRows);
     graph->setScatterStyle(QCPScatterStyle(
         QCPScatterStyle::ssCircle,
-        QPen(QColor(180, 30, 30), 1.2),
-        QBrush(QColor(180, 30, 30, 200)),
-        3));
+        Qt::NoPen,                                 // no outline
+        QBrush(QColor(180, 30, 30)),               // solid fill
+        2));
 }
 
 void MainWindow::onPlotXRangeChanged(const QCPRange&)

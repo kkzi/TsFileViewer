@@ -280,6 +280,11 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
     const int row = index.row();
     if (role == Qt::TextAlignmentRole)
     {
+        // Value column reads as text: left. No/Time stay right-aligned.
+        if (index.column() == ColValue)
+        {
+            return static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter);
+        }
         return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
     }
     if (role != Qt::DisplayRole)

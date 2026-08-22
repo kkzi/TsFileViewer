@@ -10,6 +10,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -146,12 +147,19 @@ void MainWindow::setupUi()
     auto* central = new QSplitter(Qt::Horizontal, this);
 
     auto* left = new QWidget(central);
-    searchEdit_ = new QLineEdit(left);
+    // Wrap the search box in a container so the box keeps a 4px inset while
+    // the panel itself stays flush (tree/table alignment unaffected).
+    auto* searchWrap = new QWidget(left);
+    searchEdit_ = new QLineEdit(searchWrap);
     searchEdit_->setPlaceholderText(tr("Search parameter..."));
     searchEdit_->setClearButtonEnabled(true);
     // Fixed height so the tree header lands at a predictable y; the right
     // paging bar is sized to match (see below) for column alignment.
     searchEdit_->setFixedHeight(25);
+    auto* searchWrapLayout = new QHBoxLayout(searchWrap);
+    searchWrapLayout->setContentsMargins(4, 4, 4, 4);
+    searchWrapLayout->setSpacing(0);
+    searchWrapLayout->addWidget(searchEdit_);
     treeModel_ = new ParamTreeModel(this);
     proxy_ = new ParamProxyModel(this);
     proxy_->setSourceModel(treeModel_);
@@ -160,8 +168,9 @@ void MainWindow::setupUi()
     paramTree_->setSortingEnabled(false);
     paramTree_->setUniformRowHeights(true);
     auto* leftLayout = new QVBoxLayout(left);
-    leftLayout->setContentsMargins(4, 4, 4, 4);
-    leftLayout->addWidget(searchEdit_);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(0);
+    leftLayout->addWidget(searchWrap);
     leftLayout->addWidget(paramTree_, 1);
 
     // Right side: vertical box (0 margins) holding the fixed paging bar on
@@ -173,11 +182,11 @@ void MainWindow::setupUi()
     auto* right = new QSplitter(Qt::Vertical, rightPane);
 
     // Paging bar, fixed height, outside any splitter.
-    // Height = left margin(4) + search box(25) + layout spacing(6) so the
-    // values-table header aligns horizontally with the parameter-tree header.
+    // Height matches the search wrap (4 + 25 + 4 = 33; left margins/spacing
+    // are 0) so the values-table header aligns with the parameter-tree header.
     // Layout: param name | stretch | export | <<prev rows next>> | progress
     auto* pagingBar = new QWidget(rightPane);
-    pagingBar->setFixedHeight(35);
+    pagingBar->setFixedHeight(33);
     paramNameLabel_ = new QLabel(QString(), pagingBar);
     paramNameLabel_->setMinimumWidth(120);
     exportBtn_ = new QPushButton(tr("Export"), pagingBar);

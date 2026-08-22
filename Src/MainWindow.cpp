@@ -141,8 +141,10 @@ void MainWindow::setupUi()
     paramTree_ = new QTreeView(left);
     paramTree_->setModel(proxy_);
     paramTree_->setSortingEnabled(false);
-    paramTree_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    paramTree_->header()->setStretchLastSection(true);
+    // Parameter column stretches; Type column fixed width.
+    paramTree_->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    paramTree_->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+    paramTree_->header()->resizeSection(1, 80);
     paramTree_->setUniformRowHeights(true);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(4, 4, 4, 4);

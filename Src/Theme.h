@@ -52,7 +52,7 @@ QTreeView::item:selected { background: #c4ccd4; color: #111418; }
 QTreeView::branch { background: transparent; }
 
 QTableView { border: none; gridline-color: #dfe3e8; }
-QTableView::item { padding: 1px 6px; }
+QTableView::item { padding: 0px; }
 QTableView::item:selected { background: #c4ccd4; color: #111418; }
 
 /* One header height for every view (tree, table). */

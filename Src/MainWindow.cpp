@@ -335,6 +335,15 @@ void MainWindow::setupUi()
     activateAct->setShortcut(Qt::Key_Return);
     addAction(activateAct);
     connect(activateAct, &QAction::triggered, this, &MainWindow::onParamActivated);
+    // Ctrl+F focuses the search box (and selects its text for retyping).
+    auto* findAct = new QAction(tr("Find parameter"), this);
+    findAct->setShortcut(QKeySequence::Find);
+    addAction(findAct);
+    connect(findAct, &QAction::triggered, this, [this]
+    {
+        searchEdit_->setFocus();
+        searchEdit_->selectAll();
+    });
     // Arrow keys page through the loaded series; they respect the same
     // enabled state as the Prev/Next buttons (disabled at bounds/loading).
     auto* prevAct = new QAction(tr("Previous page"), this);

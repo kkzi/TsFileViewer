@@ -170,8 +170,11 @@ void MainWindow::setupUi()
     plot_->axisRect()->setRangeDragAxes(plot_->xAxis, nullptr);
     plot_->setNoAntialiasingOnDrag(true);
     // Plain-integer tick labels for microsecond timestamps (no 2.32e9).
+    // 10-digit labels are wide: cap the tick count so they don't overlap
+    // into unreadable mush at the bottom edge.
     plot_->xAxis->setNumberFormat("f");
     plot_->xAxis->setNumberPrecision(0);
+    plot_->xAxis->ticker()->setTickCount(5);
     plot_->xAxis->setLabel(tr("Time (us)"));
     plot_->yAxis->setLabel(tr("Value"));
     // rangeChanged is overloaded; take the single-arg form.

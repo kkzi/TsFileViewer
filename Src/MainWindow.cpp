@@ -104,6 +104,10 @@ void MainWindow::setupUi()
     toolbar->addWidget(devicesLabel_);
     addSep();
 
+    tablesLabel_ = new QLabel(tr("Tables: -"), toolbar);
+    toolbar->addWidget(tablesLabel_);
+    addSep();
+
     paramsLabel_ = new QLabel(tr("Params: -"), toolbar);
     toolbar->addWidget(paramsLabel_);
     addSep();
@@ -179,6 +183,7 @@ void MainWindow::openFile(const QString& path)
     treeModel_->load({});
     fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(path)));
     devicesLabel_->setText(tr("Devices: -"));
+    tablesLabel_->setText(tr("Tables: -"));
     paramsLabel_->setText(tr("Params: -"));
     rangeLabel_->setText(tr("Range: -"));
     busy_->show();
@@ -190,6 +195,7 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
 {
     fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(meta.path)));
     devicesLabel_->setText(tr("Devices: %1").arg(meta.deviceCount));
+    tablesLabel_->setText(tr("Tables: %1").arg(meta.tableCount));
     paramsLabel_->setText(tr("Params: %1").arg(meta.paramCount));
     rangeLabel_->setText(tr("Range: -"));
 
@@ -197,10 +203,18 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
     QStringList tip;
     tip << tr("Path: %1").arg(QDir::toNativeSeparators(meta.path));
     tip << tr("Size: %1 (%2 bytes)").arg(humanSize(meta.fileSize)).arg(meta.fileSize);
-    tip << tr("Layout: tree-device");
-    if (meta.deviceCount > 0)
+    tip << tr("Layout: %1").arg(meta.tableCount > 0
+                                    ? (meta.deviceCount > 0
+                                           ? QStringLiteral("tree-device + table")
+                                           : QStringLiteral("table"))
+                                    : QStringLiteral("tree-device"));
+    if (meta.deviceCount > 0 && meta.deviceCount <= 20)
     {
         tip << tr("Devices: %1").arg(meta.devices.join(QStringLiteral(", ")));
+    }
+    if (meta.tableCount > 0)
+    {
+        tip << tr("Tables: %1").arg(meta.tables.join(QStringLiteral(", ")));
     }
     fileLabel_->setToolTip(tip.join(QLatin1Char('\n')));
 }

@@ -81,9 +81,9 @@ set(PROJECT_BUILD_OUTPUT "${CMAKE_BINARY_DIR}/qcustomplot-output")
 add_subdirectory("${QCUSTOMPLOT_DIR}/lib" "${CMAKE_BINARY_DIR}/qcustomplot")
 
 # ---- TsFileViewer -------------------------------------------------------
-file(GLOB SOURCES "Src/*.cpp" "Src/*.h")
+file(GLOB SRC_MAIN "Src/main.cpp" "Src/MainWindow.*" "Src/Models.*" "Src/TsFileDocument.*")
 
-add_executable(${PROJECT_NAME} ${SOURCES})
+add_executable(${PROJECT_NAME} ${SRC_MAIN})
 # Build the embedded tsfile before linking against its static lib.
 add_dependencies(${PROJECT_NAME} tsfile-ext)
 
@@ -127,4 +127,19 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_BINARY_DIR}/qcustomplot/qcustomplot.dll"
             "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin/qcustomplot.dll"
+)
+
+# ---- TsFileTableFixture -------------------------------------------------
+# Console helper: writes a table-model tsfile fixture for manual testing of
+# the viewer's table path (tree-only COMAC archives cannot exercise it).
+add_executable(TsFileTableFixture Src/TableFixture.cpp)
+add_dependencies(TsFileTableFixture tsfile-ext)
+target_include_directories(TsFileTableFixture PRIVATE ${TSFILE_INCLUDE_DIR})
+target_compile_options(TsFileTableFixture PRIVATE /Zc:__cplusplus)
+target_link_libraries(TsFileTableFixture PRIVATE
+    ${TSFILE_LIB_DIR}/tsfile.lib
+    ${TSFILE_LIB_DIR}/snappy.lib
+    ${TSFILE_LIB_DIR}/LZ4.lib
+    ${TSFILE_LIB_DIR}/lzokay.lib
+    ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
 )

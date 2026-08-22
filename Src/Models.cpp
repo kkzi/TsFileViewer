@@ -59,8 +59,18 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
         if (deviceItem == nullptr || p.device != currentDevice)
         {
             currentDevice = p.device;
-            deviceItem = new QStandardItem(p.device);
+            // Table params are marked so a mixed file stays readable.
+            const QString label =
+                p.source == ParamSource::Table
+                    ? QStringLiteral("[table] ") + p.device
+                    : p.device;
+            deviceItem = new QStandardItem(label);
             deviceItem->setEditable(false);
+            if (p.source == ParamSource::Table)
+            {
+                deviceItem->setToolTip(QStringLiteral("table-model table: %1")
+                                           .arg(p.device));
+            }
             auto* empty = new QStandardItem();
             empty->setEditable(false);
             appendRow({deviceItem, empty});
@@ -171,6 +181,10 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
         case ColRel:
             return QString::number((series_->ts[row] - series_->ts.first()) / 1e6, 'f', 6);
         case ColValue:
+            if (row < series_->text.size())
+            {
+                return series_->text[row];
+            }
             return formatValue(series_->value[row]);
         default:
             return {};

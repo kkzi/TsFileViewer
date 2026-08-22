@@ -45,6 +45,7 @@ private:
     // toolbar labels: important info inline, the rest in tooltips
     QLabel* fileLabel_ = nullptr;
     QLabel* devicesLabel_ = nullptr;
+    QLabel* tablesLabel_ = nullptr;
     QLabel* paramsLabel_ = nullptr;
     QLabel* rangeLabel_ = nullptr;
 

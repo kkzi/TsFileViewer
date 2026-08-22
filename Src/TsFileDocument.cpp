@@ -53,6 +53,36 @@ QString compressionName(int c)
         default: return QStringLiteral("cmp(%1)").arg(c);
     }
 }
+
+// Reads one Field into a numeric double + optional text string.
+// Returns false when the field is null.
+bool fieldToValues(const storage::Field* f, double& v, QString& text)
+{
+    if (f == nullptr || f->type_ == common::NULL_TYPE)
+    {
+        return false;
+    }
+    switch (f->type_)
+    {
+        case common::BOOLEAN:
+            v = f->value_.bval_ ? 1.0 : 0.0;
+            break;
+        case common::INT32: v = static_cast<double>(f->value_.ival_); break;
+        case common::INT64:
+        case common::TIMESTAMP: v = static_cast<double>(f->value_.lval_); break;
+        case common::FLOAT: v = static_cast<double>(f->value_.fval_); break;
+        case common::DOUBLE: v = f->value_.dval_; break;
+        case common::TEXT:
+            if (f->value_.strval_ != nullptr)
+            {
+                text = QString::fromUtf8(f->value_.strval_->buf_,
+                                         static_cast<int>(f->value_.strval_->len_));
+            }
+            break;
+        default: break;
+    }
+    return true;
+}
 }  // namespace
 
 // Helpers shared with the model layer (Models.cpp uses the tree tooltips).
@@ -76,39 +106,35 @@ public slots:
     {
         const std::string utf8Path = path.toStdString();
 
-        // Two-stage open mirrors TsFileStat: plain reader validates the file
-        // (footer present), then the tree reader walks devices and schemas.
-        // Read-only: the viewer never repairs.
-        storage::TsFileReader probe;
-        const int r = probe.open(utf8Path);
+        // Plain reader validates the file (footer present). Read-only: the
+        // viewer never repairs.
+        storage::TsFileReader reader;
+        const int r = reader.open(utf8Path);
         if (r != common::E_OK)
         {
             emit openFailed(QStringLiteral("open failed (code %1); file was not modified")
                                 .arg(r));
             return;
         }
-        probe.close();
-
-        storage::TsFileTreeReader tree;
-        if (tree.open(utf8Path) != common::E_OK)
-        {
-            emit openFailed(QStringLiteral("TsFileTreeReader could not open file"));
-            return;
-        }
 
         MetaInfo meta;
         meta.path = path;
         QVector<ParamInfo> params;
-        auto devices = tree.get_all_device_ids();
-        meta.deviceCount = static_cast<int>(devices.size());
+
+        // ---- tree part: devices > measurements ----------------------------
+        auto devices = reader.get_all_device_ids();
         for (const auto& device : devices)
         {
-            meta.devices << QString::fromStdString(device);
-            auto schemas = tree.get_device_schema(device);
+            const QString deviceName =
+                QString::fromStdString(device->get_device_name());
+            meta.devices << deviceName;
+            std::vector<storage::MeasurementSchema> schemas;
+            reader.get_timeseries_schema(device, schemas);
             for (const auto& s : schemas)
             {
                 ParamInfo p;
-                p.device = QString::fromStdString(device);
+                p.source = ParamSource::Tree;
+                p.device = deviceName;
                 p.measurement = QString::fromStdString(s.measurement_name_);
                 p.dataType = static_cast<int>(s.data_type_);
                 p.encoding = static_cast<int>(s.encoding_);
@@ -116,11 +142,41 @@ public slots:
                 params.push_back(p);
             }
         }
-        tree.close();
+        meta.deviceCount = static_cast<int>(devices.size());
 
-        if (meta.deviceCount == 0)
+        // ---- table part: real (non-virtual) tables > field columns --------
+        auto tableSchemas = reader.get_all_table_schemas();
+        for (const auto& ts : tableSchemas)
         {
-            emit openFailed(QStringLiteral("file has no devices (no tree-model data)"));
+            if (ts == nullptr || ts->is_virtual_table())
+            {
+                continue;  // virtual tree-derived tables are just the tree part
+            }
+            const QString tableName = QString::fromStdString(ts->get_table_name());
+            meta.tables << tableName;
+            const auto names = ts->get_measurement_names();
+            const auto types = ts->get_data_types();
+            const auto categories = ts->get_column_categories();
+            for (size_t i = 0; i < names.size(); ++i)
+            {
+                if (categories[i] != common::ColumnCategory::FIELD)
+                {
+                    continue;  // TAG/ATTRIBUTE columns are not time series
+                }
+                ParamInfo p;
+                p.source = ParamSource::Table;
+                p.device = tableName;
+                p.measurement = QString::fromStdString(names[i]);
+                p.dataType = static_cast<int>(types[i]);
+                params.push_back(p);
+            }
+        }
+        meta.tableCount = static_cast<int>(meta.tables.size());
+        reader.close();
+
+        if (meta.deviceCount == 0 && meta.tableCount == 0)
+        {
+            emit openFailed(QStringLiteral("file has no tree devices and no tables"));
             return;
         }
 
@@ -139,30 +195,44 @@ public slots:
             return;
         }
 
-        storage::TsFileTreeReader tree;
-        if (tree.open(path_.toStdString()) != common::E_OK)
+        storage::TsFileReader reader;
+        if (reader.open(path_.toStdString()) != common::E_OK)
         {
-            emit queryFailed(QStringLiteral("TsFileTreeReader could not open file"));
+            emit queryFailed(QStringLiteral("TsFileReader could not open file"));
+            return;
+        }
+
+        storage::ResultSet* result = nullptr;
+        int q = common::E_OK;
+        if (param.source == ParamSource::Table)
+        {
+            // Table query: result column layout is 1-based: col 1 = time,
+            // col 2.. = selected field columns (only one column selected here).
+            q = reader.query(param.device.toStdString(),
+                             {param.measurement.toStdString()},
+                             std::numeric_limits<int64_t>::min(),
+                             std::numeric_limits<int64_t>::max(), result);
+        }
+        else
+        {
+            // Tree path query: device + "." + measurement.
+            std::vector<std::string> pathList{
+                param.device.toStdString() + "." + param.measurement.toStdString()};
+            q = reader.query(pathList, std::numeric_limits<int64_t>::min(),
+                             std::numeric_limits<int64_t>::max(), result);
+        }
+        if (q != common::E_OK || result == nullptr)
+        {
+            reader.close();
+            emit queryFailed(QStringLiteral("query failed (code %1)").arg(q));
             return;
         }
 
         SeriesData out;
         out.device = param.device;
         out.measurement = param.measurement;
-
-        storage::ResultSet* result = nullptr;
-        const int q = tree.query({param.device.toStdString()},
-                                 {param.measurement.toStdString()},
-                                 std::numeric_limits<int64_t>::min(),
-                                 std::numeric_limits<int64_t>::max(), result);
-        if (q != common::E_OK || result == nullptr)
-        {
-            tree.close();
-            emit queryFailed(QStringLiteral("query failed (code %1)").arg(q));
-            return;
-        }
-
         out.numeric = param.dataType != common::TEXT;
+
         bool haveData = false;
         int64_t minTs = std::numeric_limits<int64_t>::max();
         int64_t maxTs = std::numeric_limits<int64_t>::min();
@@ -172,8 +242,8 @@ public slots:
             const int nextRet = result->next(hasNext);
             if (nextRet != common::E_OK)
             {
-                tree.destroy_query_data_set(result);
-                tree.close();
+                reader.destroy_query_data_set(result);
+                reader.close();
                 emit queryFailed(
                     QStringLiteral("query iteration failed (code %1)").arg(nextRet));
                 return;
@@ -182,8 +252,7 @@ public slots:
             {
                 break;
             }
-            // Single-measurement tree result: field 0 = time, field 1 = value
-            // (ResultSet columns are 1-based; RowRecord fields are 0-based).
+            // RowRecord fields are 0-based: field 0 = time, field 1 = value.
             storage::RowRecord* row = result->get_row_record();
             if (row == nullptr)
             {
@@ -191,21 +260,12 @@ public slots:
             }
             const int64_t ts = row->get_field(0)->get_value<int64_t>();
             double v = std::numeric_limits<double>::quiet_NaN();
-            storage::Field* f = row->get_field(1);
-            if (f != nullptr && f->type_ != common::NULL_TYPE)
+            QString text;
+            if (fieldToValues(row->get_field(1), v, text))
             {
-                switch (f->type_)
+                if (!text.isEmpty())
                 {
-                    case common::BOOLEAN:
-                        v = f->value_.bval_ ? 1.0 : 0.0;
-                        out.numeric = false;
-                        break;
-                    case common::INT32: v = static_cast<double>(f->value_.ival_); break;
-                    case common::INT64:
-                    case common::TIMESTAMP: v = static_cast<double>(f->value_.lval_); break;
-                    case common::FLOAT: v = static_cast<double>(f->value_.fval_); break;
-                    case common::DOUBLE: v = f->value_.dval_; break;
-                    default: break;  // text and anything else stay NaN
+                    out.text.push_back(text);
                 }
             }
             out.ts.push_back(ts);
@@ -214,8 +274,8 @@ public slots:
             if (!haveData || ts > maxTs) maxTs = ts;
             haveData = true;
         }
-        tree.destroy_query_data_set(result);
-        tree.close();
+        reader.destroy_query_data_set(result);
+        reader.close();
 
         // Fill the file-level time range lazily: the first query defines it,
         // later ones widen it (matches TsFileStat's global min/max semantics).
@@ -268,9 +328,6 @@ TsFileDocument::TsFileDocument(QObject* parent) : QObject(parent)
     qRegisterMetaType<MetaInfo>("MetaInfo");
     qRegisterMetaType<SeriesData>("SeriesData");
     qRegisterMetaType<QVector<ParamInfo>>("QVector<ParamInfo>");
-
-    static bool connected = false;  // worker signals need the meta types above
-    Q_UNUSED(connected);
 
     worker_ = new Worker();
     worker_->moveToThread(&thread_);

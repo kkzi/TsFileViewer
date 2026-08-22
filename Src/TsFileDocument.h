@@ -11,11 +11,18 @@
 // (open/schema walk/queries) run there so the UI stays responsive.
 // The reader objects are created and destroyed on the worker thread.
 
+enum class ParamSource
+{
+    Tree,   // tree model: device > measurement via TsFileTreeReader
+    Table,  // table model: table > field column via TsFileReader table query
+};
+
 // Registered with qRegisterMetaType so results can cross threads via signals.
 struct ParamInfo
 {
-    QString device;
-    QString measurement;
+    ParamSource source = ParamSource::Tree;
+    QString device;       // tree: device id; table: table name
+    QString measurement;  // tree: measurement; table: field column name
     int dataType = 0;     // common::TSDataType
     int encoding = 0;     // common::TSEncoding
     int compression = 0;  // common::CompressionType
@@ -27,22 +34,25 @@ struct MetaInfo
 {
     QString path;
     qint64 fileSize = 0;
-    int deviceCount = 0;
-    int paramCount = 0;  // total measurements across devices
+    int deviceCount = 0;   // tree devices
+    int tableCount = 0;    // real (non-virtual) tables
+    int paramCount = 0;    // total measurements/columns
     qint64 firstTs = 0;
     qint64 lastTs = 0;
     bool haveTimeRange = false;  // false until the first query filled it
     QStringList devices;
+    QStringList tables;
 };
 Q_DECLARE_METATYPE(MetaInfo)
 
 struct SeriesData
 {
-    QString device;
-    QString measurement;
+    QString device;        // tree device or table name
+    QString measurement;   // measurement / column name
     QVector<qint64> ts;    // us
     QVector<double> value;  // NaN where the value is not numeric
-    bool numeric = true;    // false when the measurement holds text/boolean rows
+    QVector<QString> text;  // non-empty only for STRING columns (parallel to value)
+    bool numeric = true;    // false when the column holds text/boolean rows
     QString key() const { return device + QLatin1Char('/') + measurement; }
 };
 Q_DECLARE_METATYPE(SeriesData)

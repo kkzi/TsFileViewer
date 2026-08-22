@@ -215,9 +215,10 @@ void MainWindow::setupUi()
     progress_ = new QProgressBar(pagingBar);
     progress_->setRange(0, 0);
     progress_->setTextVisible(false);
-    // Match the button height (border 2 + padding 6 + font) so the bar
-    // never towers over Prev/Next in the fixed-height paging bar.
-    progress_->setFixedHeight(22);
+    // Match the Prev/Next button height exactly so tops align in the
+    // fixed-height paging bar (buttons size themselves via QSS padding;
+    // binding avoids any 1px drift).
+    progress_->setFixedHeight(prevPage_->sizeHint().height());
     progress_->setMaximumWidth(160);
     progress_->setToolTip(tr("Loading..."));
     progress_->hide();

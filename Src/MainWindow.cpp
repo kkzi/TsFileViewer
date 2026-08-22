@@ -162,8 +162,15 @@ void MainWindow::setupUi()
 
     plot_ = new QCustomPlot(right);
     plot_->setInteraction(QCP::iRangeDrag, true);
+    // Zoom the x axis only: y stays fit to the loaded data, so dense sawtooth
+    // waveforms keep a stable amplitude scale while scrolling in time.
     plot_->setInteraction(QCP::iRangeZoom, true);
+    plot_->axisRect()->setRangeZoomAxes(plot_->xAxis, nullptr);
+    plot_->axisRect()->setRangeDragAxes(plot_->xAxis, nullptr);
     plot_->setNoAntialiasingOnDrag(true);
+    // Plain-integer tick labels for microsecond timestamps (no 2.32e9).
+    plot_->xAxis->setNumberFormat("f");
+    plot_->xAxis->setNumberPrecision(0);
     plot_->xAxis->setLabel(tr("Time (us)"));
     plot_->yAxis->setLabel(tr("Value"));
     right->setStretchFactor(0, 1);

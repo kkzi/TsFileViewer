@@ -280,8 +280,9 @@ void MainWindow::setupUi()
     plot_->xAxis->setNumberFormat("f");
     plot_->xAxis->setNumberPrecision(0);
     plot_->xAxis->ticker()->setTickCount(5);
-    plot_->xAxis->setLabel(tr("Time (us)"));
-    plot_->yAxis->setLabel(tr("Value"));
+    // No axis titles: tick values carry the units; the freed space goes to
+    // the plot area. Context (param name / codec) lives in the paging bar.
+    plot_->xAxis->setVisible(true);
     // rangeChanged is overloaded; take the single-arg form.
     connect(plot_->xAxis,
             static_cast<void (QCPAxis::*)(const QCPRange&)>(
@@ -611,7 +612,9 @@ void MainWindow::rebuildPlot()
     }
     if (series != nullptr)
     {
-        plot_->xAxis->setLabel(tr("Time (us) — %1").arg(series->measurement));
+        // No axis title (plot area stays maximal); current param already
+        // shown in the paging bar.
+        plot_->xAxis->setLabel(QString());
     }
     plot_->replot(QCustomPlot::rpQueuedReplot);
 }

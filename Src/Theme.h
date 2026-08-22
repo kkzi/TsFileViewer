@@ -42,18 +42,18 @@ QLineEdit:focus { border: 1px solid #111418; }
 /* ---- item views ------------------------------------------------------- */
 QAbstractItemView {
     background: #ffffff; border: none; border-radius: 0px;
-    selection-background-color: #d9dee4; selection-color: #111418; outline: 0;
+    selection-background-color: #c4ccd4; selection-color: #111418; outline: 0;
     alternate-background-color: #f2f4f6;
 }
 QTreeView { border: none; }
 QTreeView::item { padding: 0px; border: none; }
 QTreeView::item:hover { background: #dfe3e8; }
-QTreeView::item:selected { background: #d9dee4; color: #111418; }
+QTreeView::item:selected { background: #c4ccd4; color: #111418; }
 QTreeView::branch { background: transparent; }
 
 QTableView { border: none; gridline-color: #dfe3e8; }
 QTableView::item { padding: 1px 6px; }
-QTableView::item:selected { background: #d9dee4; color: #111418; }
+QTableView::item:selected { background: #c4ccd4; color: #111418; }
 
 /* One header height for every view (tree, table). */
 QHeaderView::section {

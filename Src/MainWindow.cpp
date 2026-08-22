@@ -153,20 +153,13 @@ void MainWindow::setupUi()
     // ---- central: left params / right (table over plot) -------------------
     auto* central = new QSplitter(Qt::Horizontal, this);
 
+    // Left: search + tree, whole panel inset by 4px, 4px spacing between.
     auto* left = new QWidget(central);
-    // Wrap the search box in a container so the box keeps a 4px inset while
-    // the panel itself stays flush (tree/table alignment unaffected).
-    auto* searchWrap = new QWidget(left);
-    searchEdit_ = new QLineEdit(searchWrap);
+    searchEdit_ = new QLineEdit(left);
     searchEdit_->setPlaceholderText(tr("Search parameter..."));
     searchEdit_->setClearButtonEnabled(true);
-    // Fixed height so the tree header lands at a predictable y; the right
-    // paging bar is sized to match (see below) for column alignment.
+    // Deterministic height for the header-alignment math below.
     searchEdit_->setFixedHeight(25);
-    auto* searchWrapLayout = new QHBoxLayout(searchWrap);
-    searchWrapLayout->setContentsMargins(4, 4, 4, 4);
-    searchWrapLayout->setSpacing(0);
-    searchWrapLayout->addWidget(searchEdit_);
     treeModel_ = new ParamTreeModel(this);
     proxy_ = new ParamProxyModel(this);
     proxy_->setSourceModel(treeModel_);
@@ -175,9 +168,9 @@ void MainWindow::setupUi()
     paramTree_->setSortingEnabled(false);
     paramTree_->setUniformRowHeights(true);
     auto* leftLayout = new QVBoxLayout(left);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(0);
-    leftLayout->addWidget(searchWrap);
+    leftLayout->setContentsMargins(4, 4, 4, 4);
+    leftLayout->setSpacing(4);
+    leftLayout->addWidget(searchEdit_);
     leftLayout->addWidget(paramTree_, 1);
 
     // Right side: vertical box (0 margins) holding the fixed paging bar on
@@ -189,8 +182,8 @@ void MainWindow::setupUi()
     auto* right = new QSplitter(Qt::Vertical, rightPane);
 
     // Paging bar, fixed height, outside any splitter.
-    // Height matches the search wrap (4 + 25 + 4 = 33; left margins/spacing
-    // are 0) so the values-table header aligns with the parameter-tree header.
+    // Height = left margin(4) + search(25) + spacing(4) so the values-table
+    // header aligns with the parameter-tree header.
     // Layout: param name | stretch | export | <<prev rows next>> | progress
     auto* pagingBar = new QWidget(rightPane);
     pagingBar->setFixedHeight(33);
@@ -229,7 +222,13 @@ void MainWindow::setupUi()
     connect(exportBtn_, &QPushButton::clicked, this, &MainWindow::exportCsv);
 
     rightLayout->addWidget(pagingBar);
-    rightLayout->addWidget(right, 1);
+    // Table+plot inset by 4px; the paging bar stays full-width.
+    auto* rightContent = new QWidget(rightPane);
+    auto* rightContentLayout = new QVBoxLayout(rightContent);
+    rightContentLayout->setContentsMargins(4, 0, 4, 4);
+    rightContentLayout->setSpacing(0);
+    rightContentLayout->addWidget(right);
+    rightLayout->addWidget(rightContent, 1);
 
     valueModel_ = new ValueTableModel(this);
     valuesTable_ = new QTableView(right);

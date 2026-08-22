@@ -388,11 +388,20 @@ void MainWindow::rebuildPlot()
         // keeps the per-pixel min/max envelope instead.
         graph->setAdaptiveSampling(true);
         graph->setLineStyle(QCPGraph::lsStepLeft);
-        graph->rescaleAxes();
-        // Padding so the curve is not glued to the frame.
-        const double pad = std::abs(plot_->yAxis->range().size()) * 0.05 + 1e-9;
-        plot_->yAxis->setRange(plot_->yAxis->range().lower - pad,
-                               plot_->yAxis->range().upper + pad);
+        // Fit the view only while the page is still loading (first fit);
+        // afterwards keep the user's zoom: re-fitting on every progressive
+        // chunk would snap the view back to the full page range and make
+        // zooming-in impossible (sawtooth stays compressed into bars).
+        if (fitOnNextRebuild_)
+        {
+            graph->rescaleAxes();
+            // Padding so the curve is not glued to the frame.
+            const double pad =
+                std::abs(plot_->yAxis->range().size()) * 0.05 + 1e-9;
+            plot_->yAxis->setRange(plot_->yAxis->range().lower - pad,
+                                   plot_->yAxis->range().upper + pad);
+            fitOnNextRebuild_ = false;
+        }
     }
     if (series != nullptr)
     {
@@ -448,6 +457,7 @@ void MainWindow::loadPage(qint64 page)
     }
     page_ = page;
     loading_ = true;
+    fitOnNextRebuild_ = true;  // new page: fit the view once, then keep zoom
     busy_->show();
     progress_->show();
     prevPage_->setEnabled(false);

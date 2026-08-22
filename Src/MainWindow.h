@@ -70,4 +70,7 @@ private:
     ParamInfo currentParam_;
     bool loading_ = false;  // a query is streaming (guards re-trigger)
     qint64 page_ = 0;       // current row page of currentParam_
+    // Fit axes to data on the next rebuildPlot (new page); cleared after,
+    // so progressive chunks keep the user's zoom instead of snapping back.
+    bool fitOnNextRebuild_ = true;
 };

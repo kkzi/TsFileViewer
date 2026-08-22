@@ -438,38 +438,12 @@ void MainWindow::applyScatterSize(QCPGraph* graph, int totalRows)
     {
         return;
     }
-    // Estimate visible sample count from the current x range vs the row span.
-    const QCPRange& xr = plot_->xAxis->range();
-    const SeriesData* series = valueModel_->series();
-    if (series == nullptr || series->ts.size() < 2)
-    {
-        graph->setScatterStyle(QCPScatterStyle());
-        return;
-    }
-    const double dataSpan =
-        static_cast<double>(series->ts.last() - series->ts.first());
-    double visible = dataSpan > 0
-                         ? static_cast<double>(series->ts.size()) * xr.size() / dataSpan
-                         : static_cast<double>(series->ts.size());
-    visible = qBound(1.0, visible, 1e9);
-
-    // Dense view: tiny cheap dots. Sparse view (<= ~1000 samples): full
-    // circles. Linear ramp in between.
-    double size = 2.0;
-    if (visible <= 1000.0)
-    {
-        size = 6.0;
-    }
-    else if (visible < 20000.0)
-    {
-        const double t = 1.0 - (visible - 1000.0) / 19000.0;
-        size = 2.0 + 4.0 * t;
-    }
+    Q_UNUSED(totalRows);
     graph->setScatterStyle(QCPScatterStyle(
         QCPScatterStyle::ssCircle,
         QPen(QColor(180, 30, 30), 1.2),
         QBrush(QColor(180, 30, 30, 200)),
-        size));
+        3));
 }
 
 void MainWindow::onPlotXRangeChanged(const QCPRange&)

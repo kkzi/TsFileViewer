@@ -292,11 +292,29 @@ void MainWindow::setupUi()
     plot_->axisRect()->setRangeZoomAxes(plot_->xAxis, nullptr);
     plot_->axisRect()->setRangeDragAxes(plot_->xAxis, nullptr);
     plot_->setNoAntialiasingOnDrag(true);
-    // Plain-integer tick labels for microsecond timestamps (no 2.32e9).
-    // 10-digit labels are wide: cap the tick count so they don't overlap
-    // into unreadable mush at the bottom edge.
+    // Fixed-precision seconds on the x axis (no scientific notation). 6
+    // decimals = microsecond resolution; when the view spans hundreds of
+    // seconds the decimals are noise, so precision adapts to the zoom level.
     plot_->xAxis->setNumberFormat("f");
-    plot_->xAxis->setNumberPrecision(0);
+    connect(plot_->xAxis,
+            static_cast<void (QCPAxis::*)(const QCPRange&)>(
+                &QCPAxis::rangeChanged),
+            this, [this](const QCPRange& r)
+    {
+        // Pick the smallest precision whose tick labels still differ.
+        const double span = r.size();
+        int precision = 6;
+        if (span > 1e6) precision = 0;
+        else if (span > 1e3) precision = 1;
+        else if (span > 1e2) precision = 2;
+        else if (span > 1e1) precision = 3;
+        else if (span > 1e0) precision = 4;
+        else if (span > 1e-1) precision = 5;
+        if (plot_->xAxis->numberPrecision() != precision)
+        {
+            plot_->xAxis->setNumberPrecision(precision);
+        }
+    });
     plot_->xAxis->ticker()->setTickCount(5);
     // No axis titles: tick values carry the units; the freed space goes to
     // the plot area. Context (param name / codec) lives in the paging bar.

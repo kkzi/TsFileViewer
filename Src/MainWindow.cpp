@@ -301,14 +301,19 @@ void MainWindow::setupUi()
                 &QCPAxis::rangeChanged),
             this, [this](const QCPRange& r)
     {
-        // Label precision follows the tick step: whole-second steps print
-        // as integers, sub-second steps print their decimals.
-        const double step = plot_->xAxis->ticker()->getTickStep(r);
+        // Label precision follows the actual ticks: if the ticks carry
+        // fractional seconds, show them; whole-second ticks stay integers.
+        // Derive the step from consecutive tick positions.
+        const QVector<double> ticks = plot_->xAxis->tickVector();
+        double step = 1.0;
+        if (ticks.size() >= 2)
+        {
+            step = std::abs(ticks.at(1) - ticks.at(0));
+        }
         int precision = 0;
         if (step < 1.0)
         {
-            precision = static_cast<int>(
-                std::ceil(-std::log10(step)) + 0.5);
+            precision = static_cast<int>(std::ceil(-std::log10(step)) + 0.5);
             precision = qBound(1, precision, 6);
         }
         if (plot_->xAxis->numberPrecision() != precision)

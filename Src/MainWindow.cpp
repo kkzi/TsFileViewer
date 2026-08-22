@@ -390,11 +390,12 @@ void MainWindow::rebuildPlot()
         auto* graph = plot_->addGraph();
         graph->setData(x, series->value, true);
         // Keep min/max of dense data visible at screen resolution: with
-        // ~1M points over ~1k px, plain line drawing collapses sawtooth
-        // shapes into an opaque band of vertical strokes. Adaptive sampling
-        // keeps the per-pixel min/max envelope instead.
+        // ~1M points over ~1k px, plain line drawing collapses shapes into
+        // a band; adaptive sampling keeps the per-pixel min/max envelope.
         graph->setAdaptiveSampling(true);
-        graph->setLineStyle(QCPGraph::lsStepLeft);
+        // Straight lines between samples: values connect directly (a 0..7
+        // counter shows as diagonal ramps), rather than stepped hold levels.
+        graph->setLineStyle(QCPGraph::lsLine);
         // Fit the view only while the page is still loading (first fit);
         // afterwards keep the user's zoom: re-fitting on every progressive
         // chunk would snap the view back to the full page range and make

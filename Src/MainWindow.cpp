@@ -124,6 +124,7 @@ void MainWindow::setupUi()
     // ---- toolbar: metainfo bar --------------------------------------------
     auto* toolbar = addToolBar(QStringLiteral("Main"));
     toolbar->setMovable(false);
+    toolbar->setContextMenuPolicy(Qt::PreventContextMenu);  // no right-click menu
     auto* openAct = toolbar->addAction(tr("Open..."));
     openAct->setShortcut(QKeySequence::Open);  // Ctrl+O
     connect(openAct, &QAction::triggered, this, [this]

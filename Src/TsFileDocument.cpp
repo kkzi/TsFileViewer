@@ -2,6 +2,7 @@
 
 #include "common/record.h"
 #include "common/tsfile_common.h"
+#include "file/restorable_tsfile_io_writer.h"
 #include "reader/tsfile_reader.h"
 #include "reader/tsfile_tree_reader.h"
 
@@ -124,15 +125,64 @@ public slots:
         // meta.path below keeps the original for display.
         const std::string libPath = pathbridge::toLibPath(path).toStdString();
 
-        // Plain reader validates the file (footer present). Read-only: the
-        // viewer never repairs.
+        // Plain reader validates the file (footer present). On failure, fall
+        // back to RestorableTsFileIOWriter: it truncates the corrupted tail
+        // and seals the file in place (footer rewrite), mirroring TsFileStat
+        // --repair. The user is asked first (see MainWindow::onRepairQuestion).
         storage::TsFileReader reader;
-        const int r = reader.open(libPath);
+        int r = reader.open(libPath);
+        bool recovered = false;
+        qint64 truncatedBytes = 0;
         if (r != common::E_OK)
         {
-            emit openFailed(QStringLiteral("open failed (code %1); file was not modified")
-                                .arg(r));
-            return;
+            if (!repairAsked_ && !repairAllowed_)
+            {
+                // First failure: ask the user once whether to repair in place.
+                repairAsked_ = true;
+                emit repairConfirmRequested(path, r);
+                return;
+            }
+            if (!repairAllowed_)
+            {
+                emit openFailed(QStringLiteral(
+                                    "open failed (code %1); file was not modified")
+                                    .arg(r));
+                return;
+            }
+            storage::RestorableTsFileIOWriter rw;
+            const int rr = rw.open(libPath, /*truncate_corrupted=*/true);
+            if (rr != common::E_OK)
+            {
+                emit openFailed(QStringLiteral(
+                                    "open failed (code %1); not recoverable")
+                                    .arg(r));
+                return;
+            }
+            truncatedBytes = rw.get_truncated_size();
+            if (rw.can_write())
+            {
+                if (rw.end_file() != common::E_OK)
+                {
+                    rw.close();
+                    emit openFailed(
+                        QStringLiteral("repair sealing failed (file untouched beyond truncation)"));
+                    return;
+                }
+                rw.close();
+                recovered = true;
+            }
+            else
+            {
+                rw.close();
+            }
+            r = reader.open(libPath);
+            if (r != common::E_OK)
+            {
+                emit openFailed(QStringLiteral(
+                                    "open failed (code %1) even after repair")
+                                    .arg(r));
+                return;
+            }
         }
 
         MetaInfo meta;
@@ -201,6 +251,8 @@ public slots:
         meta.paramCount = static_cast<int>(params.size());
         const QFileInfo fi(path);
         meta.fileSize = fi.size();
+        meta.repaired = recovered;
+        meta.truncatedBytes = truncatedBytes;
 
         emit opened(meta, params);
     }
@@ -417,6 +469,7 @@ public slots:
 signals:
     void opened(const MetaInfo& meta, const QVector<ParamInfo>& params);
     void openFailed(const QString& error);
+    void repairConfirmRequested(const QString& path, int code);
     void valuesChunk(const SeriesData& chunk, bool done);
     void queryFailed(const QString& error);
     void timeRangeKnown(qint64 firstTs, qint64 lastTs, bool haveRange);
@@ -520,6 +573,8 @@ public:
 
 private:
     QString path_;
+    bool repairAllowed_ = false;  // set after the user confirms
+    bool repairAsked_ = false;
     bool haveRange_ = false;
     qint64 firstTs_ = 0;
     qint64 lastTs_ = 0;
@@ -551,6 +606,8 @@ TsFileDocument::TsFileDocument(QObject* parent) : QObject(parent)
     // the worker lives on thread_).
     connect(worker_, &Worker::opened, this, &TsFileDocument::opened);
     connect(worker_, &Worker::openFailed, this, &TsFileDocument::openFailed);
+    connect(worker_, &Worker::repairConfirmRequested, this,
+            &TsFileDocument::repairConfirmRequested);
     connect(worker_, &Worker::valuesChunk, this, &TsFileDocument::valuesChunk);
     connect(worker_, &Worker::queryFailed, this, &TsFileDocument::queryFailed);
     connect(this, &TsFileDocument::supersedeRequested, worker_,
@@ -568,9 +625,21 @@ TsFileDocument::~TsFileDocument()
 
 void TsFileDocument::openAsync(const QString& path)
 {
+    // New file selection resets the repair dialog state.
     QMetaObject::invokeMethod(worker_, [worker = worker_, path]
     {
+        worker->repairAsked_ = false;
+        worker->repairAllowed_ = false;
         worker->setFile(path);
+        worker->open(path);
+    });
+}
+
+void TsFileDocument::retryWithRepair(const QString& path, bool allow)
+{
+    QMetaObject::invokeMethod(worker_, [worker = worker_, path, allow]
+    {
+        worker->repairAllowed_ = allow;
         worker->open(path);
     });
 }

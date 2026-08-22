@@ -48,6 +48,8 @@ struct MetaInfo
     bool haveTimeRange = false;  // false until the first query filled it
     QStringList devices;
     QStringList tables;
+    bool repaired = false;       // open() truncated+sealed a corrupted tail
+    qint64 truncatedBytes = 0;   // bytes dropped by the repair
 };
 Q_DECLARE_METATYPE(MetaInfo)
 
@@ -74,7 +76,12 @@ public:
     ~TsFileDocument() override;
 
     // Async: emits opened(MetaInfo, QVector<ParamInfo>) or openFailed(QString).
+    // A corrupted file triggers repairConfirmRequested(path, code); call
+    // retryWithRepair(path, true/false) afterwards to proceed.
     void openAsync(const QString& path);
+    // User answered the repair question: true = truncate+seal then open,
+    // false = report the failure unchanged.
+    void retryWithRepair(const QString& path, bool allow);
     // Async: emits valuesChunk(SeriesData, bool done) progressively — the
     // series carries the rows appended since the last chunk; done=true on
     // the final chunk. queryFailed(QString) on error. Selecting a new
@@ -97,6 +104,7 @@ public:
 signals:
     void opened(const MetaInfo& meta, const QVector<ParamInfo>& params);
     void openFailed(const QString& error);
+    void repairConfirmRequested(const QString& path, int code);
     void valuesChunk(const SeriesData& chunk, bool done);
     void queryFailed(const QString& error);
     // Internal: tell the worker a newer query should supersede a running one.

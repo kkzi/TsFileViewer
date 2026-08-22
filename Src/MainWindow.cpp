@@ -73,13 +73,38 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         updateMetaBar(meta);
         clearContent();
         busy_->hide();
-        statusBar()->showMessage(tr("Loaded %1").arg(meta.path), 5000);
+        if (meta.repaired)
+        {
+            statusBar()->showMessage(
+                tr("Loaded %1 — repaired in place (%2 bytes truncated)")
+                    .arg(meta.path)
+                    .arg(meta.truncatedBytes),
+                8000);
+        }
+        else
+        {
+            statusBar()->showMessage(tr("Loaded %1").arg(meta.path), 5000);
+        }
     });
     connect(doc_, &TsFileDocument::openFailed, this, [this](const QString& error)
     {
         busy_->hide();
         statusBar()->showMessage(tr("Failed: %1").arg(error));
         QMessageBox::warning(this, tr("Open failed"), error);
+    });
+    connect(doc_, &TsFileDocument::repairConfirmRequested, this,
+            [this](const QString& path, int code)
+    {
+        busy_->hide();
+        const auto answer = QMessageBox::question(
+            this, tr("File appears incomplete"),
+            tr("This TsFile failed to open (code %1) — its tail is likely "
+               "truncated (e.g. a crash during recording).\n\n"
+               "Repair it in place? The corrupted tail will be cut off and "
+               "the file sealed; everything before it stays readable.")
+                .arg(code),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        doc_->retryWithRepair(path, answer == QMessageBox::Yes);
     });
     connect(doc_, &TsFileDocument::valuesChunk, this, &MainWindow::onValuesChunk);
     connect(doc_, &TsFileDocument::queryFailed, this, [this](const QString& error)

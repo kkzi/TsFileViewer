@@ -11,11 +11,11 @@ namespace theme
 inline const char* kStyle = R"(
 * { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
 
-QMainWindow, QDialog, QMessageBox { background: #eceef1; color: #111418; }
+QMainWindow, QDialog, QMessageBox { background: #ffffff; color: #111418; }
 QWidget { color: #111418; }
 
 /* ---- toolbar ---------------------------------------------------------- */
-QToolBar { background: #ffffff; border: none; border-bottom: 2px solid #111418; spacing: 2px; }
+QToolBar { background: #ffffff; border: none; border-bottom: 1px solid #111418; spacing: 2px; }
 QToolBar::separator { width: 1px; margin: 4px 2px; background: #b7c0cb; }
 QToolBar QLabel { background: transparent; border: none; padding: 0 5px; color: #111418; }
 
@@ -28,7 +28,7 @@ QPushButton { min-width: 48px; }
 QToolButton:hover, QPushButton:hover { background: #e4e7ec; border-color: #111418; }
 QToolButton:pressed, QPushButton:pressed { background: #111418; border-color: #111418; color: #ffffff; }
 QToolButton:disabled, QPushButton:disabled { background: #eceef1; border-color: #b7c0cb; color: #8a94a6; }
-QPushButton:focus { border: 2px solid #111418; outline: none; }
+QPushButton:focus { border: 1px solid #111418; outline: none; }
 
 /* ---- inputs ----------------------------------------------------------- */
 QLineEdit, QComboBox, QSpinBox {
@@ -37,7 +37,7 @@ QLineEdit, QComboBox, QSpinBox {
     selection-background-color: #111418; selection-color: #ffffff;
 }
 QLineEdit:hover, QComboBox:hover { background: #f6f7f9; }
-QLineEdit:focus { border: 2px solid #111418; }
+QLineEdit:focus { border: 1px solid #111418; }
 
 /* ---- item views ------------------------------------------------------- */
 QAbstractItemView {
@@ -51,7 +51,7 @@ QTreeView::item:hover { background: #dfe3e8; }
 QTreeView::item:selected { background: #111418; color: #ffffff; }
 QTreeView::branch { background: transparent; }
 
-QTableView { border: 1px solid #b7c0cb; gridline-color: #dfe3e8; }
+QTableView { border-left: none; border-right: none; border-top: 1px solid #b7c0cb; border-bottom: 1px solid #b7c0cb; gridline-color: #dfe3e8; }
 QTableView::item { padding: 1px 6px; }
 QTableView::item:selected { background: #111418; color: #ffffff; }
 

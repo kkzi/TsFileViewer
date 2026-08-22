@@ -102,6 +102,12 @@ void MainWindow::setupUi()
             openFile(path);
         }
     });
+    // Inset the Open button from the toolbar's top-left corner.
+    if (QWidget* openBtn = toolbar->widgetForAction(openAct))
+    {
+        openBtn->setStyleSheet(
+            QStringLiteral("margin-left: 4px; margin-bottom: 4px;"));
+    }
     // Push metainfo to the right side of the toolbar.
     auto* spacer = new QWidget(toolbar);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);

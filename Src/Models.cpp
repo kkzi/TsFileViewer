@@ -2,7 +2,57 @@
 
 #include "TsFileDocument.h"
 
+#include <QIcon>
+#include <QPainter>
+#include <QPixmap>
+#include <QPolygonF>
+
 #include <cmath>
+
+namespace
+{
+// Flat monochrome runtime-painted icons (no asset files): match the app
+// theme, distinguish folder (device/table group) from leaf (parameter).
+// Cached once per size.
+QIcon folderIcon()
+{
+    static const QIcon icon = [] {
+        QPixmap pm(16, 16);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        // Solid dark folder silhouette: tab + body.
+        p.setPen(QPen(QColor(0x11, 0x14, 0x18), 1));
+        p.setBrush(QBrush(QColor(0x11, 0x14, 0x18)));
+        p.drawRect(1, 3, 5, 3);          // tab
+        p.drawRect(1, 5, 14, 8);         // body
+        p.setBrush(QBrush(QColor(0xff, 0xff, 0xff)));
+        p.drawRect(2, 6, 12, 6);         // hollow interior
+        p.end();
+        return QIcon(pm);
+    }();
+    return icon;
+}
+
+QIcon leafIcon()
+{
+    static const QIcon icon = [] {
+        QPixmap pm(16, 16);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        // Leaf: small filled square marker (a "value point"), centered.
+        p.setPen(Qt::NoPen);
+        p.setBrush(QBrush(QColor(0x66, 0x70, 0x85)));
+        p.drawRect(5, 5, 6, 6);
+        p.setBrush(QBrush(QColor(0xff, 0xff, 0xff)));
+        p.drawRect(6, 6, 4, 4);
+        p.end();
+        return QIcon(pm);
+    }();
+    return icon;
+}
+}  // namespace
 
 // ---- ParamProxyModel --------------------------------------------------------
 
@@ -64,7 +114,7 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
                 p.source == ParamSource::Table
                     ? QStringLiteral("[table] ") + p.device
                     : p.device;
-            deviceItem = new QStandardItem(label);
+            deviceItem = new QStandardItem(folderIcon(), label);
             deviceItem->setEditable(false);
             if (p.source == ParamSource::Table)
             {
@@ -75,7 +125,7 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
             empty->setEditable(false);
             appendRow({deviceItem, empty});
         }
-        auto* nameItem = new QStandardItem(p.measurement);
+        auto* nameItem = new QStandardItem(leafIcon(), p.measurement);
         nameItem->setEditable(false);
         auto* typeItem = new QStandardItem(TsFileNames::dataType(p.dataType));
         typeItem->setEditable(false);

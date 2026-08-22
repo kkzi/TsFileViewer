@@ -5,6 +5,18 @@
 #include "reader/tsfile_reader.h"
 #include "reader/tsfile_tree_reader.h"
 
+// After the tsfile headers: PathBridge pulls qt_windows.h, whose macros
+// clash with tsfile names (IN vs LocateStatus { BEFORE, IN, AFTER };
+// BOOLEAN vs common::BOOLEAN). Clear them before continuing.
+#include "PathBridge.h"
+
+#ifdef IN
+#undef IN
+#endif
+#ifdef BOOLEAN
+#undef BOOLEAN
+#endif
+
 #include <QFileInfo>
 #include <QMetaObject>
 
@@ -13,43 +25,43 @@
 
 namespace
 {
+// No "using namespace common" here: windows.h (via PathBridge.h) defines
+// global typedefs BOOLEAN/INT32/INT64 that would be ambiguous with the
+// common:: enum members. Qualify explicitly instead.
 QString dataTypeName(int t)
 {
-    using namespace common;
     switch (t)
     {
-        case BOOLEAN: return QStringLiteral("BOOLEAN");
-        case INT32: return QStringLiteral("INT32");
-        case INT64: return QStringLiteral("INT64");
-        case FLOAT: return QStringLiteral("FLOAT");
-        case DOUBLE: return QStringLiteral("DOUBLE");
-        case TEXT: return QStringLiteral("TEXT");
+        case common::BOOLEAN: return QStringLiteral("BOOLEAN");
+        case common::INT32: return QStringLiteral("INT32");
+        case common::INT64: return QStringLiteral("INT64");
+        case common::FLOAT: return QStringLiteral("FLOAT");
+        case common::DOUBLE: return QStringLiteral("DOUBLE");
+        case common::TEXT: return QStringLiteral("TEXT");
         default: return QStringLiteral("type(%1)").arg(t);
     }
 }
 
 QString encodingName(int e)
 {
-    using namespace common;
     switch (e)
     {
-        case PLAIN: return QStringLiteral("PLAIN");
-        case TS_2DIFF: return QStringLiteral("TS_2DIFF");
-        case RLE: return QStringLiteral("RLE");
-        case GORILLA: return QStringLiteral("GORILLA");
+        case common::PLAIN: return QStringLiteral("PLAIN");
+        case common::TS_2DIFF: return QStringLiteral("TS_2DIFF");
+        case common::RLE: return QStringLiteral("RLE");
+        case common::GORILLA: return QStringLiteral("GORILLA");
         default: return QStringLiteral("enc(%1)").arg(e);
     }
 }
 
 QString compressionName(int c)
 {
-    using namespace common;
     switch (c)
     {
-        case UNCOMPRESSED: return QStringLiteral("UNCOMPRESSED");
-        case SNAPPY: return QStringLiteral("SNAPPY");
-        case GZIP: return QStringLiteral("GZIP");
-        case LZ4: return QStringLiteral("LZ4");
+        case common::UNCOMPRESSED: return QStringLiteral("UNCOMPRESSED");
+        case common::SNAPPY: return QStringLiteral("SNAPPY");
+        case common::GZIP: return QStringLiteral("GZIP");
+        case common::LZ4: return QStringLiteral("LZ4");
         default: return QStringLiteral("cmp(%1)").arg(c);
     }
 }
@@ -104,12 +116,14 @@ public:
 public slots:
     void open(const QString& path)
     {
-        const std::string utf8Path = path.toStdString();
+        // Bridge to an ACP-safe path for the library (see PathBridge.h);
+        // meta.path below keeps the original for display.
+        const std::string libPath = pathbridge::toLibPath(path).toStdString();
 
         // Plain reader validates the file (footer present). Read-only: the
         // viewer never repairs.
         storage::TsFileReader reader;
-        const int r = reader.open(utf8Path);
+        const int r = reader.open(libPath);
         if (r != common::E_OK)
         {
             emit openFailed(QStringLiteral("open failed (code %1); file was not modified")
@@ -300,7 +314,9 @@ public slots:
 
     void setFile(const QString& path)
     {
-        path_ = path;
+        // Upstream lib opens paths via CRT ::open() in the active code page;
+        // bridge UTF-8 (Qt) paths to the ASCII 8.3 short path on Windows.
+        path_ = pathbridge::toLibPath(path);
         haveRange_ = false;
         firstTs_ = 0;
         lastTs_ = 0;

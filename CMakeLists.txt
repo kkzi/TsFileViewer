@@ -37,6 +37,13 @@ include(ExternalProject)
 set(TSFILE_BUILD_DIR "${CMAKE_BINARY_DIR}/embedded-tsfile")
 set(TSFILE_LIB_DIR "${TSFILE_BUILD_DIR}/lib")
 find_package(Threads REQUIRED)
+if(WIN32)
+    set(TSFILE_LIB_PREFIX "")
+    set(TSFILE_LIB_SUFFIX ".lib")
+else()
+    set(TSFILE_LIB_PREFIX "lib")
+    set(TSFILE_LIB_SUFFIX ".a")
+endif()
 ExternalProject_Add(tsfile-ext
     SOURCE_DIR        ${TSFILE_CPP_DIR}
     BINARY_DIR        ${TSFILE_BUILD_DIR}
@@ -52,12 +59,12 @@ ExternalProject_Add(tsfile-ext
         -DENABLE_ANTLR4=OFF
         -DCMAKE_CXX_STANDARD=14
     BUILD_BYPRODUCTS
-        "${TSFILE_LIB_DIR}/tsfile.lib"
-        "${TSFILE_LIB_DIR}/snappy.lib"
-        "${TSFILE_LIB_DIR}/LZ4.lib"
-        "${TSFILE_LIB_DIR}/lzokay.lib"
-        "${TSFILE_LIB_DIR}/zlibstatic.lib"
-        "${TSFILE_LIB_DIR}/zlibstaticd.lib")
+        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}tsfile${TSFILE_LIB_SUFFIX}"
+        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}snappy${TSFILE_LIB_SUFFIX}"
+        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}LZ4${TSFILE_LIB_SUFFIX}"
+        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}lzokay${TSFILE_LIB_SUFFIX}"
+        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}zlibstatic${TSFILE_LIB_SUFFIX}"
+        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}zlibstaticd${TSFILE_LIB_SUFFIX}")
 
 add_library(tsfile INTERFACE IMPORTED)
 add_dependencies(tsfile tsfile-ext)
@@ -96,19 +103,36 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Import the externally built static lib (post-configure path is known).
-# The compression libs (snappy/LZ4/lzokay/zlibstatic) are static targets
-# inside the external build; link their outputs directly too.
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${TSFILE_LIB_DIR}/tsfile.lib
-    ${TSFILE_LIB_DIR}/snappy.lib
-    ${TSFILE_LIB_DIR}/LZ4.lib
-    ${TSFILE_LIB_DIR}/lzokay.lib
-    ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
-    qcustomplot
-    Qt5::Core
-    Qt5::Gui
-    Qt5::Widgets
-)
+if(WIN32)
+    # The compression libs (snappy/LZ4/lzokay/zlibstatic) are static targets
+    # inside the external build; link their outputs directly too.
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${TSFILE_LIB_DIR}/tsfile.lib
+        ${TSFILE_LIB_DIR}/snappy.lib
+        ${TSFILE_LIB_DIR}/LZ4.lib
+        ${TSFILE_LIB_DIR}/lzokay.lib
+        ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
+        qcustomplot
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+    )
+else()
+    # POSIX: static lib lands under lib/ with a lib*.a naming; zlib has no
+    # debug variant there.
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${TSFILE_LIB_DIR}/libtsfile.a
+        ${TSFILE_LIB_DIR}/libsnappy.a
+        ${TSFILE_LIB_DIR}/libLZ4.a
+        ${TSFILE_LIB_DIR}/liblzokay.a
+        ${TSFILE_LIB_DIR}/libzlibstatic.a
+        Threads::Threads
+        qcustomplot
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+    )
+endif()
 
 if(WIN32)
     # CommandLineToArgvW for UTF-8 argv rebuild in main. /Zc:__cplusplus is
@@ -122,12 +146,14 @@ endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin"
 )
-# qcustomplot.dll lands next to the exe (copy from its own output dir).
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_BINARY_DIR}/qcustomplot/qcustomplot.dll"
-            "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin/qcustomplot.dll"
-)
+if(WIN32)
+    # qcustomplot.dll lands next to the exe (copy from its own output dir).
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_BINARY_DIR}/qcustomplot/qcustomplot.dll"
+                "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin/qcustomplot.dll"
+    )
+endif()
 
 # ---- TsFileTableFixture -------------------------------------------------
 # Console helper: writes a table-model tsfile fixture for manual testing of
@@ -135,11 +161,22 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 add_executable(TsFileTableFixture Src/TableFixture.cpp)
 add_dependencies(TsFileTableFixture tsfile-ext)
 target_include_directories(TsFileTableFixture PRIVATE ${TSFILE_INCLUDE_DIR})
-target_compile_options(TsFileTableFixture PRIVATE /Zc:__cplusplus)
-target_link_libraries(TsFileTableFixture PRIVATE
-    ${TSFILE_LIB_DIR}/tsfile.lib
-    ${TSFILE_LIB_DIR}/snappy.lib
-    ${TSFILE_LIB_DIR}/LZ4.lib
-    ${TSFILE_LIB_DIR}/lzokay.lib
-    ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
-)
+if(WIN32)
+    target_compile_options(TsFileTableFixture PRIVATE /Zc:__cplusplus)
+    target_link_libraries(TsFileTableFixture PRIVATE
+        ${TSFILE_LIB_DIR}/tsfile.lib
+        ${TSFILE_LIB_DIR}/snappy.lib
+        ${TSFILE_LIB_DIR}/LZ4.lib
+        ${TSFILE_LIB_DIR}/lzokay.lib
+        ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
+    )
+else()
+    target_link_libraries(TsFileTableFixture PRIVATE
+        ${TSFILE_LIB_DIR}/libtsfile.a
+        ${TSFILE_LIB_DIR}/libsnappy.a
+        ${TSFILE_LIB_DIR}/libLZ4.a
+        ${TSFILE_LIB_DIR}/liblzokay.a
+        ${TSFILE_LIB_DIR}/libzlibstatic.a
+        Threads::Threads
+    )
+endif()

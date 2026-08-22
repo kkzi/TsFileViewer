@@ -379,6 +379,12 @@ void MainWindow::rebuildPlot()
         }
         auto* graph = plot_->addGraph();
         graph->setData(x, series->value, true);
+        // Keep min/max of dense data visible at screen resolution: with
+        // ~1M points over ~1k px, plain line drawing collapses sawtooth
+        // shapes into an opaque band of vertical strokes. Adaptive sampling
+        // keeps the per-pixel min/max envelope instead.
+        graph->setAdaptiveSampling(true);
+        graph->setLineStyle(QCPGraph::lsStepLeft);
         graph->rescaleAxes();
         // Padding so the curve is not glued to the frame.
         const double pad = std::abs(plot_->yAxis->range().size()) * 0.05 + 1e-9;

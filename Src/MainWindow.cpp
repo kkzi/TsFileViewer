@@ -85,7 +85,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     connect(doc_, &TsFileDocument::queryFailed, this, [this](const QString& error)
     {
         busy_->hide();
-        progress_->hide();
         loading_ = false;
         statusBar()->showMessage(tr("Error: %1").arg(error));
     });
@@ -210,18 +209,6 @@ void MainWindow::setupUi()
     exportBtn_->setEnabled(false);
     prevPage_->setEnabled(false);
     nextPage_->setEnabled(false);
-    // Busy-mode bar: the total row count is unknown until the query
-    // finishes, so no percentage — just an active pulse.
-    progress_ = new QProgressBar(pagingBar);
-    progress_->setRange(0, 0);
-    progress_->setTextVisible(false);
-    // Match the Prev/Next button height exactly so tops align in the
-    // fixed-height paging bar (buttons size themselves via QSS padding;
-    // binding avoids any 1px drift).
-    progress_->setFixedHeight(prevPage_->sizeHint().height());
-    progress_->setMaximumWidth(160);
-    progress_->setToolTip(tr("Loading..."));
-    progress_->hide();
     auto* pagingLayout = new QHBoxLayout(pagingBar);
     pagingLayout->setContentsMargins(4, 0, 4, 0);
     pagingLayout->setSpacing(4);
@@ -231,7 +218,6 @@ void MainWindow::setupUi()
     pagingLayout->addWidget(prevPage_);
     pagingLayout->addWidget(pageInfo_);
     pagingLayout->addWidget(nextPage_);
-    pagingLayout->addWidget(progress_);
     connect(prevPage_, &QPushButton::clicked, this, [this] { loadPage(page_ - 1); });
     connect(nextPage_, &QPushButton::clicked, this, [this] { loadPage(page_ + 1); });
     connect(exportBtn_, &QPushButton::clicked, this, &MainWindow::exportCsv);
@@ -441,7 +427,6 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     }
 
     busy_->hide();
-    progress_->hide();
     loading_ = false;
     const SeriesData* series = valueModel_->series();
     if (series == nullptr)
@@ -583,7 +568,7 @@ void MainWindow::rebuildPlot()
         QVector<double> x(series->ts.size());
         for (int i = 0; i < series->ts.size(); ++i)
         {
-            x[i] = static_cast<double>(series->ts[i]);
+            x[i] = static_cast<double>(series->ts[i]) / 1e6;
         }
         auto* graph = plot_->addGraph();
         graph->setData(x, series->value, true);
@@ -758,7 +743,6 @@ void MainWindow::loadPage(qint64 page)
     loading_ = true;
     fitOnNextRebuild_ = true;  // new page: fit the view once, then keep zoom
     busy_->show();
-    progress_->show();
     prevPage_->setEnabled(false);
     nextPage_->setEnabled(false);
     statusBar()->showMessage(

@@ -64,7 +64,6 @@ private:
     QTableView* valuesTable_ = nullptr;
     QCustomPlot* plot_ = nullptr;
     QProgressBar* busy_ = nullptr;
-    QProgressBar* progress_ = nullptr;  // status bar load indicator
     class QCPGraph* plotGraph_ = nullptr;  // current curve (marker retuning)
     class QPushButton* prevPage_ = nullptr;
     class QPushButton* nextPage_ = nullptr;

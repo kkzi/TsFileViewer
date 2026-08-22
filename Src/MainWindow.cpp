@@ -57,6 +57,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         treeModel_->load(params);
         proxy_->setFilter(QString());
         paramTree_->expandAll();
+        // load() clears the model, which resets the header columns to default
+        // widths; re-apply the Parameter column default after each load.
+        paramTree_->header()->resizeSection(0, 250);
         updateMetaBar(meta);
         clearContent();
         busy_->hide();
@@ -141,7 +144,6 @@ void MainWindow::setupUi()
     paramTree_ = new QTreeView(left);
     paramTree_->setModel(proxy_);
     paramTree_->setSortingEnabled(false);
-    paramTree_->header()->resizeSection(0, 250);  // Parameter column default
     paramTree_->setUniformRowHeights(true);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(4, 4, 4, 4);

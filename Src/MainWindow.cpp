@@ -301,15 +301,16 @@ void MainWindow::setupUi()
                 &QCPAxis::rangeChanged),
             this, [this](const QCPRange& r)
     {
-        // Pick the smallest precision whose tick labels still differ.
-        const double span = r.size();
-        int precision = 6;
-        if (span > 1e6) precision = 0;
-        else if (span > 1e3) precision = 1;
-        else if (span > 1e2) precision = 2;
-        else if (span > 1e1) precision = 3;
-        else if (span > 1e0) precision = 4;
-        else if (span > 1e-1) precision = 5;
+        // Label precision follows the tick step: whole-second steps print
+        // as integers, sub-second steps print their decimals.
+        const double step = plot_->xAxis->ticker()->getTickStep(r);
+        int precision = 0;
+        if (step < 1.0)
+        {
+            precision = static_cast<int>(
+                std::ceil(-std::log10(step)) + 0.5);
+            precision = qBound(1, precision, 6);
+        }
         if (plot_->xAxis->numberPrecision() != precision)
         {
             plot_->xAxis->setNumberPrecision(precision);

@@ -38,6 +38,10 @@ private:
     void updateMetaBar(const MetaInfo& meta);
     void onValuesChunk(const SeriesData& chunk, bool done);
     void rebuildPlot();
+    // Size the sample markers by visible density (small when dense, large
+    // when zoomed into <=~1000 samples).
+    void applyScatterSize(class QCPGraph* graph, int totalRows);
+    void onPlotXRangeChanged(const class QCPRange& range);
     void clearContent();
     // Double-click / Enter / context-menu action on the param tree.
     void onParamActivated();
@@ -51,6 +55,7 @@ private:
     QCustomPlot* plot_ = nullptr;
     QProgressBar* busy_ = nullptr;
     QProgressBar* progress_ = nullptr;  // status bar load indicator
+    class QCPGraph* plotGraph_ = nullptr;  // current curve (marker retuning)
     class QPushButton* prevPage_ = nullptr;
     class QPushButton* nextPage_ = nullptr;
     class QLabel* pageInfo_ = nullptr;

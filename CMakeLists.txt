@@ -93,6 +93,9 @@ file(GLOB SRC_MAIN "Src/main.cpp" "Src/MainWindow.*" "Src/Models.*" "Src/TsFileD
 add_executable(${PROJECT_NAME} ${SRC_MAIN})
 # Build the embedded tsfile before linking against its static lib.
 add_dependencies(${PROJECT_NAME} tsfile-ext)
+# We link the qcustomplot DLL: mark its decl macros as dllimport so
+# metaobjects (needed for signal connections) resolve against the lib.
+target_compile_definitions(${PROJECT_NAME} PRIVATE QCUSTOMPLOT_USE_LIBRARY)
 
 # GUI app: no console window.
 set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)

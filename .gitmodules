@@ -1,7 +1,7 @@
 [submodule "3rd/tsfile"]
 	path = 3rd/tsfile
-	url = git@github.com:kkzi/tsfile.git
-	branch = fix/cpp-ts2diff-float-double-batch-prefix
+	url = https://github.com/apache/tsfile.git
+	branch = develop
 [submodule "3rd/qcustomplot"]
 	path = 3rd/qcustomplot
 	url = https://github.com/legerch/QCustomPlot-library.git

@@ -535,13 +535,14 @@ void MainWindow::setupUi()
     });
 
     // ---- status bar --------------------------------------------------------
-    // Left: version (turns into an "up" link when a newer release exists).
-    // Right: parameter analysis. The file label lives in the toolbar.
+    // Left: transient messages (file path etc.). Right: version (turns
+    // into an "up" link when a newer release exists) then analysis. All
+    // inline on one row; permanent widgets never wrap with the message.
     versionLabel_ = new QLabel(
         QStringLiteral("v" APP_VERSION), this);
     versionLabel_->setCursor(Qt::PointingHandCursor);
     versionLabel_->installEventFilter(this);
-    statusBar()->addWidget(versionLabel_);
+    statusBar()->addPermanentWidget(versionLabel_);
     checkForUpdate();
     analysisLabel_ = new QLabel(QString(), this);
     statusBar()->addPermanentWidget(analysisLabel_);

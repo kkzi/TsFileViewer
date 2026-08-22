@@ -438,18 +438,27 @@ public:
             double v = std::numeric_limits<double>::quiet_NaN();
             QString text;
             fieldToValues(row->get_field(1), v, text);
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "%lld,", (long long)ts);
-            f.write(buf);
+            // Seconds with microsecond precision, trailing zeros trimmed
+            // (matches the table's Time column), then the CSV separator.
+            char tbuf[48];
+            std::snprintf(tbuf, sizeof(tbuf), "%.6f",
+                          static_cast<double>(ts) / 1e6);
+            char* end = tbuf + std::strlen(tbuf) - 1;
+            while (end > tbuf && *end == '0') *end-- = '\0';
+            if (*end == '.') *end = '\0';
+            const size_t tlen = std::strlen(tbuf);
+            tbuf[tlen] = ',';
+            tbuf[tlen + 1] = '\0';
+            f.write(tbuf);
             if (!text.isEmpty())
             {
                 f.write(text.toUtf8());
             }
             else
             {
-                // %.17f would force 17 decimals; %g switches to scientific
-                // for large/small exponents. Use snprintf %f with enough
-                // digits, then trim trailing zeros.
+                // %.10f keeps plain decimal (no scientific), then trailing
+                // zeros trimmed.
+                char buf[48];
                 std::snprintf(buf, sizeof(buf), "%.10f", v);
                 char* end = buf + std::strlen(buf) - 1;
                 while (end > buf && *end == '0') *end-- = '\0';

@@ -143,12 +143,9 @@ void MainWindow::setupUi()
     toolbar->addWidget(codecLabel_);
     addSep();
 
+    // Single label: show tree devices OR table count per file's model.
     devicesLabel_ = new QLabel(tr("Devices: -"), toolbar);
     toolbar->addWidget(devicesLabel_);
-    addSep();
-
-    tablesLabel_ = new QLabel(tr("Tables: -"), toolbar);
-    toolbar->addWidget(tablesLabel_);
     addSep();
 
     paramsLabel_ = new QLabel(tr("Params: -"), toolbar);
@@ -393,7 +390,6 @@ void MainWindow::openFile(const QString& path)
     currentPath_ = path;
     fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(path)));
     devicesLabel_->setText(tr("Devices: -"));
-    tablesLabel_->setText(tr("Tables: -"));
     paramsLabel_->setText(tr("Params: -"));
     rangeLabel_->setText(tr("Range: -"));
     busy_->show();
@@ -405,8 +401,14 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
 {
     currentPath_ = meta.path;
     fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(meta.path)));
-    devicesLabel_->setText(tr("Devices: %1").arg(meta.deviceCount));
-    tablesLabel_->setText(tr("Tables: %1").arg(meta.tableCount));
+    if (meta.deviceCount > 0)
+    {
+        devicesLabel_->setText(tr("Devices: %1").arg(meta.deviceCount));
+    }
+    else
+    {
+        devicesLabel_->setText(tr("Tables: %1").arg(meta.tableCount));
+    }
     paramsLabel_->setText(tr("Params: %1").arg(meta.paramCount));
     rangeLabel_->setText(tr("Range: -"));
 

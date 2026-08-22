@@ -396,6 +396,12 @@ void MainWindow::rebuildPlot()
         // Straight lines between samples: values connect directly (a 0..7
         // counter shows as diagonal ramps), rather than stepped hold levels.
         graph->setLineStyle(QCPGraph::lsLine);
+        // Circle marker per visible sample: makes individual data points
+        // obvious (sparse/event data especially). With adaptive sampling the
+        // library auto-thins markers by pixel density, so dense pages don't
+        // overdraw while zoomed-in pages show every sample.
+        graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle,
+                                               QColor(30, 30, 30), 1.0));
         // Fit the view only while the page is still loading (first fit);
         // afterwards keep the user's zoom: re-fitting on every progressive
         // chunk would snap the view back to the full page range and make

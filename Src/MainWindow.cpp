@@ -143,6 +143,9 @@ void MainWindow::setupUi()
     searchEdit_ = new QLineEdit(left);
     searchEdit_->setPlaceholderText(tr("Search parameter..."));
     searchEdit_->setClearButtonEnabled(true);
+    // Fixed height so the tree header lands at a predictable y; the right
+    // paging bar is sized to match (see below) for column alignment.
+    searchEdit_->setFixedHeight(25);
     treeModel_ = new ParamTreeModel(this);
     proxy_ = new ParamProxyModel(this);
     proxy_->setSourceModel(treeModel_);
@@ -163,10 +166,12 @@ void MainWindow::setupUi()
     rightLayout->setSpacing(0);
     auto* right = new QSplitter(Qt::Vertical, rightPane);
 
-    // Paging bar. Fixed 25px, outside any splitter.
+    // Paging bar, fixed height, outside any splitter.
+    // Height = left margin(4) + search box(25) + layout spacing(6) so the
+    // values-table header aligns horizontally with the parameter-tree header.
     // Layout: param name | stretch | export | <<prev rows next>> | progress
     auto* pagingBar = new QWidget(rightPane);
-    pagingBar->setFixedHeight(25);
+    pagingBar->setFixedHeight(35);
     paramNameLabel_ = new QLabel(QString(), pagingBar);
     paramNameLabel_->setMinimumWidth(120);
     exportBtn_ = new QPushButton(tr("Export"), pagingBar);

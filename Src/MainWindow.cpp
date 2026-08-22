@@ -100,8 +100,16 @@ void MainWindow::setupUi()
             openFile(path);
         }
     });
+    // Push metainfo to the right side of the toolbar.
+    auto* spacer = new QWidget(toolbar);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar->addWidget(spacer);
 
     auto addSep = [toolbar] { toolbar->addSeparator(); };
+
+    codecLabel_ = new QLabel(tr("Codec: -"), toolbar);
+    toolbar->addWidget(codecLabel_);
+    addSep();
 
     fileLabel_ = new QLabel(tr("File: -"), toolbar);
     fileLabel_->setMinimumWidth(140);
@@ -555,6 +563,9 @@ void MainWindow::onParamActivated()
         return;
     }
     currentParam_ = param;
+    codecLabel_->setText(tr("Codec: %1 / %2")
+                             .arg(TsFileNames::encoding(param.encoding),
+                                  TsFileNames::compression(param.compression)));
     loadPage(0);
 }
 

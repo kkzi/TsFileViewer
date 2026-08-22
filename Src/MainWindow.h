@@ -67,6 +67,7 @@ private:
     QLabel* paramsLabel_ = nullptr;
     QLabel* rangeLabel_ = nullptr;
     QLabel* analysisLabel_ = nullptr;  // status bar: per-parameter analysis
+    QLabel* codecLabel_ = nullptr;     // toolbar: current param's codec
 
     // models / data
     TsFileDocument* doc_ = nullptr;

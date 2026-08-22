@@ -307,15 +307,28 @@ void MainWindow::setupUi()
     activateAct->setShortcut(Qt::Key_Return);
     addAction(activateAct);
     connect(activateAct, &QAction::triggered, this, &MainWindow::onParamActivated);
-    // Arrow keys page through the loaded series (mirrors Prev/Next buttons).
+    // Arrow keys page through the loaded series; they respect the same
+    // enabled state as the Prev/Next buttons (disabled at bounds/loading).
     auto* prevAct = new QAction(tr("Previous page"), this);
     prevAct->setShortcut(Qt::Key_Left);
     addAction(prevAct);
-    connect(prevAct, &QAction::triggered, this, [this] { loadPage(page_ - 1); });
+    connect(prevAct, &QAction::triggered, this, [this]
+    {
+        if (prevPage_->isEnabled())
+        {
+            loadPage(page_ - 1);
+        }
+    });
     auto* nextAct = new QAction(tr("Next page"), this);
     nextAct->setShortcut(Qt::Key_Right);
     addAction(nextAct);
-    connect(nextAct, &QAction::triggered, this, [this] { loadPage(page_ + 1); });
+    connect(nextAct, &QAction::triggered, this, [this]
+    {
+        if (nextPage_->isEnabled())
+        {
+            loadPage(page_ + 1);
+        }
+    });
     paramTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(paramTree_, &QTreeView::customContextMenuRequested, this,
             [this, activateAct](const QPoint& pos)

@@ -5,8 +5,12 @@
 #include <qcustomplot.h>
 
 #include <QAction>
+#include <QApplication>
+#include <QClipboard>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -15,6 +19,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QtConcurrent>
@@ -23,6 +28,7 @@
 #include <QTableView>
 #include <QToolBar>
 #include <QTreeView>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -93,6 +99,7 @@ void MainWindow::setupUi()
     auto* toolbar = addToolBar(QStringLiteral("Main"));
     toolbar->setMovable(false);
     auto* openAct = toolbar->addAction(tr("Open..."));
+    openAct->setShortcut(QKeySequence::Open);  // Ctrl+O
     connect(openAct, &QAction::triggered, this, [this]
     {
         const QString path = QFileDialog::getOpenFileName(
@@ -310,7 +317,10 @@ void MainWindow::setupUi()
     // ---- status bar --------------------------------------------------------
     // Left side: current file path. Right side: parameter analysis.
     // (paging + progress moved to the bar above the values table)
+    // Left-click opens the containing folder; right-click copies the path.
     fileLabel_ = new QLabel(tr("File: -"), this);
+    fileLabel_->setCursor(Qt::PointingHandCursor);
+    fileLabel_->installEventFilter(this);
     statusBar()->addWidget(fileLabel_);
     analysisLabel_ = new QLabel(QString(), this);
     statusBar()->addPermanentWidget(analysisLabel_);
@@ -318,10 +328,38 @@ void MainWindow::setupUi()
     statusBar()->showMessage(tr("Ready — open a TsFile (*.tsfile) to begin, or double-click a parameter to load values."));
 }
 
+bool MainWindow::eventFilter(QObject* obj, QEvent* event)
+{
+    if (obj == fileLabel_ && !currentPath_.isEmpty())
+    {
+        if (event->type() == QEvent::MouseButtonPress)
+        {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton)
+            {
+                const QDir dir = QFileInfo(currentPath_).absoluteDir();
+                if (dir.exists())
+                {
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(dir.absolutePath()));
+                }
+                return true;
+            }
+            if (me->button() == Qt::RightButton)
+            {
+                QApplication::clipboard()->setText(QDir::toNativeSeparators(currentPath_));
+                statusBar()->showMessage(tr("Path copied to clipboard"), 2500);
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(obj, event);
+}
+
 void MainWindow::openFile(const QString& path)
 {
     clearContent();
     treeModel_->load({});
+    currentPath_ = path;
     fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(path)));
     devicesLabel_->setText(tr("Devices: -"));
     tablesLabel_->setText(tr("Tables: -"));
@@ -334,6 +372,7 @@ void MainWindow::openFile(const QString& path)
 
 void MainWindow::updateMetaBar(const MetaInfo& meta)
 {
+    currentPath_ = meta.path;
     fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(meta.path)));
     devicesLabel_->setText(tr("Devices: %1").arg(meta.deviceCount));
     tablesLabel_->setText(tr("Tables: %1").arg(meta.tableCount));
@@ -357,6 +396,8 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
     {
         tip << tr("Tables: %1").arg(meta.tables.join(QStringLiteral(", ")));
     }
+    tip << tr("Left-click: open containing folder");
+    tip << tr("Right-click: copy path");
     fileLabel_->setToolTip(tip.join(QLatin1Char('\n')));
 }
 

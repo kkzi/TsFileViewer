@@ -35,6 +35,11 @@ public:
 
     void openFile(const QString& path);
 
+protected:
+    // File label in the status bar: left-click = reveal folder,
+    // right-click = copy path.
+    bool eventFilter(QObject* obj, QEvent* event) override;
+
 private:
     void setupUi();
     void updateMetaBar(const MetaInfo& meta);
@@ -82,6 +87,8 @@ private:
     ParamProxyModel* proxy_ = nullptr;
     ValueTableModel* valueModel_ = nullptr;
     ParamInfo currentParam_;
+    // Current file's original path (label shows native separators).
+    QString currentPath_;
     bool loading_ = false;  // a query is streaming (guards re-trigger)
     qint64 page_ = 0;       // current row page of currentParam_
     // Fit axes to data on the next rebuildPlot (new page); cleared after,

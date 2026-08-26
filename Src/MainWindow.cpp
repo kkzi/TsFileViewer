@@ -33,6 +33,7 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableView>
+#include <QTimer>
 #include <QToolBar>
 #include <QTreeView>
 #include <QUrl>
@@ -60,6 +61,16 @@ double firstFinite(const QVector<double>& v)
     }
     return std::numeric_limits<double>::quiet_NaN();
 }
+
+// Sample rate for the paging-bar stats; kHz above 10 kHz for readability.
+QString formatRate(double hz)
+{
+    if (hz >= 10000.0)
+    {
+        return QString::number(hz / 1000.0, 'f', 1) + QStringLiteral(" kHz");
+    }
+    return QString::number(hz, 'f', 1) + QStringLiteral(" Hz");
+}
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
@@ -81,7 +92,20 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         clearContent();
         busy_->hide();
         overlay_->end();
-        if (meta.repaired)
+        if (meta.fileCount > 1)
+        {
+            QStringList parts;
+            parts << tr("%1 file(s)").arg(meta.fileCount);
+            if (meta.skippedFileCount > 0)
+            {
+                parts << tr("%1 skipped").arg(meta.skippedFileCount);
+            }
+            parts << tr("%1 parameter(s)").arg(meta.paramCount);
+            statusBar()->showMessage(
+                tr("Loaded %1 files (%2)").arg(meta.fileCount).arg(parts.join(QStringLiteral(", "))),
+                8000);
+        }
+        else if (meta.repaired)
         {
             statusBar()->showMessage(
                 tr("Loaded %1 — repaired in place (%2 bytes truncated)")
@@ -149,12 +173,22 @@ void MainWindow::setupUi()
         {
             startDir = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
         }
-        const QString path = QFileDialog::getOpenFileName(
+        // Multi-select: one file opens alone; several files aggregate into
+        // one device->param tree (shared params concatenate in time order).
+        const QStringList paths = QFileDialog::getOpenFileNames(
             this, tr("Open TsFile"), startDir,
             tr("TsFile (*.tsfile);;All files (*.*)"));
-        if (!path.isEmpty())
+        if (paths.isEmpty())
         {
-            openFile(path);
+            return;
+        }
+        if (paths.size() == 1)
+        {
+            openFile(paths.first());
+        }
+        else
+        {
+            openFiles(paths);
         }
     });
     // Inset the Open button from the toolbar's top-left corner.
@@ -240,6 +274,10 @@ void MainWindow::setupUi()
     pagingBar->setFixedHeight(33);
     paramNameLabel_ = new QLabel(QString(), pagingBar);
     paramNameLabel_->setMinimumWidth(120);
+    // Muted stats beside the name: rows · time span · mean sample rate.
+    paramStatLabel_ = new QLabel(QString(), pagingBar);
+    paramStatLabel_->setStyleSheet(
+        QStringLiteral("color: #667085; padding-left: 2px;"));
     exportBtn_ = new QPushButton(tr("Export"), pagingBar);
     exportBtn_->setFlat(true);
     prevPage_ = new QPushButton(tr("<< Prev"), pagingBar);
@@ -254,6 +292,7 @@ void MainWindow::setupUi()
     pagingLayout->setContentsMargins(4, 0, 4, 0);
     pagingLayout->setSpacing(4);
     pagingLayout->addWidget(paramNameLabel_);
+    pagingLayout->addWidget(paramStatLabel_);
     pagingLayout->addStretch(1);
     pagingLayout->addWidget(exportBtn_);
     pagingLayout->addWidget(prevPage_);
@@ -470,21 +509,25 @@ void MainWindow::setupUi()
     central->setChildrenCollapsible(false);
     setCentralWidget(central);
 
+    // Debounced filtering: the recursive tree filter walks every node, so
+    // per-keystroke filtering stutters on large schemas. Apply after typing
+    // pauses instead; Enter applies immediately.
+    searchTimer_ = new QTimer(this);
+    searchTimer_->setSingleShot(true);
+    searchTimer_->setInterval(300);
+    connect(searchTimer_, &QTimer::timeout, this, [this]
+    {
+        applySearch(searchEdit_->text());
+    });
     connect(searchEdit_, &QLineEdit::textChanged, this, [this](const QString& text)
     {
-        proxy_->setFilter(text);
-        // Filtering collapses device nodes when their children are removed
-        // and re-added; re-expand so matched leaves stay visible. Also
-        // auto-select the first match for quick Enter-loading.
-        paramTree_->expandAll();
-        if (!text.isEmpty())
-        {
-            const QModelIndex first = proxy_->index(0, 0);
-            if (first.isValid())
-            {
-                paramTree_->setCurrentIndex(first);
-            }
-        }
+        searchTimer_->start();
+        Q_UNUSED(text);
+    });
+    connect(searchEdit_, &QLineEdit::returnPressed, this, [this]
+    {
+        searchTimer_->stop();
+        applySearch(searchEdit_->text());
     });
     // Query on explicit activation (double-click / Enter / context menu),
     // not on plain selection: browsing the tree must not fire queries.
@@ -668,10 +711,36 @@ void MainWindow::openFile(const QString& path)
     doc_->openAsync(path);
 }
 
+void MainWindow::openFiles(const QStringList& paths)
+{
+    clearContent();
+    treeModel_->load({});
+    // Keep a representative path so the next Open dialog starts in the same
+    // folder (labels show the count, not this path).
+    currentPath_ = paths.first();
+    fileLabel_->setText(tr("Files: %1").arg(paths.size()));
+    devicesLabel_->setText(tr("Devices: -"));
+    paramsLabel_->setText(tr("Params: -"));
+    rangeLabel_->setText(tr("Range: -"));
+    busy_->show();
+    overlay_->begin();
+    statusBar()->showMessage(
+        tr("Opening %1 file(s) (aggregating)...").arg(paths.size()));
+    doc_->openFilesAsync(paths);
+}
+
 void MainWindow::updateMetaBar(const MetaInfo& meta)
 {
-    currentPath_ = meta.path;
-    fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(meta.path)));
+    // Multi-file: keep the existing currentPath_ (a representative file);
+    // clearing it would send the next Open dialog to the desktop.
+    fileLabel_->setText(
+        meta.fileCount > 1
+            ? tr("Files: %1").arg(meta.fileCount)
+            : tr("File: %1").arg(QDir::toNativeSeparators(meta.path)));
+    if (meta.fileCount == 1)
+    {
+        currentPath_ = meta.path;
+    }
     if (meta.deviceCount > 0)
     {
         devicesLabel_->setText(tr("Devices: %1").arg(meta.deviceCount));
@@ -681,24 +750,47 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
         devicesLabel_->setText(tr("Tables: %1").arg(meta.tableCount));
     }
     paramsLabel_->setText(tr("Params: %1").arg(meta.paramCount));
-    rangeLabel_->setText(tr("Range: -"));
+    rangeLabel_->setText(
+        meta.haveTimeRange
+            ? tr("Range: %1 s .. %2 s")
+                  .arg(meta.firstTs / 1e6, 0, 'f', 3)
+                  .arg(meta.lastTs / 1e6, 0, 'f', 3)
+            : tr("Range: -"));
 
     // Secondary details live in the file label's tooltip.
     QStringList tip;
-    tip << tr("Path: %1").arg(QDir::toNativeSeparators(meta.path));
-    tip << tr("Size: %1 (%2 bytes)").arg(humanSize(meta.fileSize)).arg(meta.fileSize);
-    tip << tr("Layout: %1").arg(meta.tableCount > 0
-                                    ? (meta.deviceCount > 0
-                                           ? QStringLiteral("tree-device + table")
-                                           : QStringLiteral("table"))
-                                    : QStringLiteral("tree-device"));
+    if (meta.fileCount > 1)
+    {
+        tip << tr("Files: %1 (%2 skipped)").arg(meta.fileCount).arg(meta.skippedFileCount);
+        tip << tr("Total size: %1").arg(humanSize(meta.fileSize));
+        if (meta.skippedFileCount > 0)
+        {
+            tip << tr("Skipped files could not be opened (corrupted tail?)");
+        }
+    }
+    else
+    {
+        tip << tr("Path: %1").arg(QDir::toNativeSeparators(meta.path));
+        tip << tr("Size: %1 (%2 bytes)").arg(humanSize(meta.fileSize)).arg(meta.fileSize);
+        tip << tr("Layout: %1").arg(meta.tableCount > 0
+                                        ? (meta.deviceCount > 0
+                                               ? QStringLiteral("tree-device + table")
+                                               : QStringLiteral("table"))
+                                        : QStringLiteral("tree-device"));
+    }
     if (meta.deviceCount > 0 && meta.deviceCount <= 20)
     {
         tip << tr("Devices: %1").arg(meta.devices.join(QStringLiteral(", ")));
     }
-    if (meta.tableCount > 0)
+    if (meta.tableCount > 0 && meta.tableCount <= 20)
     {
         tip << tr("Tables: %1").arg(meta.tables.join(QStringLiteral(", ")));
+    }
+    if (meta.overlappingParamCount > 0)
+    {
+        tip << tr("Note: %1 parameter(s) have overlapping time ranges across "
+                  "files; their concatenated values are not globally "
+                  "time-sorted").arg(meta.overlappingParamCount);
     }
     tip << tr("Left-click: open containing folder");
     tip << tr("Right-click: copy path");
@@ -776,6 +868,35 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
             5000);
     }
     rebuildPlot();
+
+    // ---- paging-bar stats: rows · time span · mean rate -------------------
+    // Span and rate derive from the loaded page (first..last Time column);
+    // rate = (rows-1)/span, the mean sampling frequency across the page.
+    if (!series->ts.isEmpty())
+    {
+        const double spanS =
+            static_cast<double>(series->ts.last() - series->ts.first()) / 1e6;
+        const int n = series->ts.size();
+        QString rate = tr("-");
+        if (n >= 2 && spanS > 0.0)
+        {
+            rate = formatRate((n - 1) / spanS);
+        }
+        paramStatLabel_->setText(
+            tr("%1 rows · %2 s span · %3")
+                .arg(n)
+                .arg(QString::number(spanS, 'f', 3), rate));
+        paramStatLabel_->setToolTip(
+            tr("Rows: %1\nDuration: %2 s (last row - first row of the "
+               "Time column)\nRate: %3 ((rows - 1) / duration)")
+                .arg(n)
+                .arg(QString::number(spanS, 'f', 6), rate));
+    }
+    else
+    {
+        paramStatLabel_->setText(QString());
+        paramStatLabel_->setToolTip(QString());
+    }
 
     // ---- stats: plot tooltip + status-bar analysis -------------------------
     double vmin = std::numeric_limits<double>::quiet_NaN();
@@ -1016,6 +1137,9 @@ void MainWindow::exportCsv()
 void MainWindow::clearContent()
 {
     valueModel_->setSeries(SeriesData{});
+    paramNameLabel_->setText(QString());
+    paramStatLabel_->setText(QString());
+    paramStatLabel_->setToolTip(QString());
     plot_->clearPlottables();
     plotGraph_ = nullptr;
     if (tracer_ != nullptr)
@@ -1024,6 +1148,23 @@ void MainWindow::clearContent()
         tracer_->setVisible(false);
     }
     plot_->replot();
+}
+
+void MainWindow::applySearch(const QString& text)
+{
+    proxy_->setFilter(text);
+    // Filtering collapses device nodes when their children are removed
+    // and re-added; re-expand so matched leaves stay visible. Also
+    // auto-select the first match for quick Enter-loading.
+    paramTree_->expandAll();
+    if (!text.isEmpty())
+    {
+        const QModelIndex first = proxy_->index(0, 0);
+        if (first.isValid())
+        {
+            paramTree_->setCurrentIndex(first);
+        }
+    }
 }
 
 void MainWindow::onParamActivated()
@@ -1056,6 +1197,9 @@ void MainWindow::onParamActivated()
     }
     currentParam_ = param;
     paramNameLabel_->setText(param.measurement);
+    // Stats from the previous series are stale until the query completes.
+    paramStatLabel_->setText(QString());
+    paramStatLabel_->setToolTip(QString());
     codecLabel_->setText(tr("Codec: %1 / %2")
                              .arg(TsFileNames::encoding(param.encoding),
                                   TsFileNames::compression(param.compression)));

@@ -13,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QProgressBar;
 class QTableView;
+class QTimer;
 class QTreeView;
 
 class ParamProxyModel;
@@ -36,6 +37,8 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
 
     void openFile(const QString& path);
+    // Open several files at once: params aggregate across them.
+    void openFiles(const QStringList& paths);
 
 protected:
     // File label in the status bar: left-click = reveal folder,
@@ -57,6 +60,8 @@ private:
     void clearContent();
     // Double-click / Enter / context-menu action on the param tree.
     void onParamActivated();
+    // Run the tree filter now (debounce timer vs. immediate Enter).
+    void applySearch(const QString& text);
     // Query the current parameter at a row-based page (0-based).
     void loadPage(qint64 page);
     // GitHub releases/latest check; updates versionLabel_ on a newer tag.
@@ -65,6 +70,7 @@ private:
 
     // widgets
     QLineEdit* searchEdit_ = nullptr;
+    QTimer* searchTimer_ = nullptr;  // debounce for the tree filter
     QTreeView* paramTree_ = nullptr;
     QTableView* valuesTable_ = nullptr;
     QCustomPlot* plot_ = nullptr;
@@ -88,6 +94,7 @@ private:
     QNetworkAccessManager net_{this};  // update check
     QLabel* codecLabel_ = nullptr;     // toolbar: current param's codec
     QLabel* paramNameLabel_ = nullptr; // paging bar: current param name
+    QLabel* paramStatLabel_ = nullptr; // paging bar: rows · span · rate
     class QPushButton* exportBtn_ = nullptr;  // paging bar: CSV export
 
     // models / data

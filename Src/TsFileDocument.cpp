@@ -21,6 +21,8 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
+#include <QSet>
 #include <QMetaObject>
 
 #include <algorithm>
@@ -118,6 +120,29 @@ class TsFileDocument::Worker : public QObject
     Q_OBJECT
 public:
     explicit Worker(QObject* parent = nullptr) : QObject(parent) {}
+
+    // Per-file slice of one parameter: row count and time range come from
+    // the footer statistics (no data decode).
+    struct ParamSlice
+    {
+        qint64 count = 0;
+        qint64 startTs = std::numeric_limits<qint64>::max();
+        qint64 endTs = std::numeric_limits<qint64>::min();
+    };
+    // Aggregated routing info for one (device, measurement) pair.
+    struct ParamRoute
+    {
+        QHash<int, ParamSlice> perFile;  // fileIdx -> slice
+        // perFile entries sorted by start time (query visit order).
+        QVector<QPair<int, ParamSlice>> fileOrder;
+        int dataType = 0;
+        int encoding = 0;
+        int compression = 0;
+        qint64 totalRows = 0;
+        bool treeSource = false;    // seen as tree device measurement
+        bool tableSource = false;   // seen as table field column
+        bool overlaps = false;      // two files cover overlapping time
+    };
 
 public slots:
     void open(const QString& path)    {
@@ -257,9 +282,239 @@ public slots:
         emit opened(meta, params);
     }
 
+    // Multi-file mode: aggregate the per-file schemas and footer statistics
+    // into routes_, and hand the UI one merged device->param list. Corrupted
+    // files are skipped (no repair prompts here — fixing one file of a set
+    // is a per-file decision).
+    void openFiles(const QStringList& paths)
+    {
+        files_.clear();
+        routes_.clear();
+        path_.clear();
+
+        if (paths.isEmpty())
+        {
+            emit openFailed(QStringLiteral("no files given"));
+            return;
+        }
+
+        MetaInfo meta;
+        // Single readable file degrades below; multi-file keeps an empty
+        // path (no single path to show) with the file count carrying the
+        // info.
+        meta.path = paths.size() == 1 ? paths.first() : QString();
+
+        int skipped = 0;
+        QStringList loadedFiles;
+        for (const QString& path : paths)
+        {
+            if (!appendFileToRoutes(path, loadedFiles.size()))
+            {
+                ++skipped;
+                continue;
+            }
+            loadedFiles << path;
+        }
+        files_ = loadedFiles;
+
+        if (files_.isEmpty())
+        {
+            emit openFailed(QStringLiteral("none of the %1 file(s) could be opened")
+                                .arg(paths.size()));
+            return;
+        }
+        // Exactly one readable file: degrade to single-file mode so
+        // query/export use the plain path_ code path.
+        if (files_.size() == 1)
+        {
+            path_ = pathbridge::toLibPath(files_.first());
+            files_.clear();
+            routes_.clear();
+        }
+
+        // Merged, device-grouped param list for the tree model. routes_ keys
+        // keep first-seen insertion order; sorting by key groups devices
+        // (each device's params stay contiguous) and makes runs stable.
+        QStringList keys = routes_.keys();
+        std::sort(keys.begin(), keys.end());
+        QVector<ParamInfo> params;
+        params.reserve(keys.size());
+        for (const QString& key : qAsConst(keys))
+        {
+            const ParamRoute& r = routes_.value(key);
+            const int sep = key.indexOf(QLatin1Char('\x01'));
+            ParamInfo p;
+            p.source = r.tableSource && !r.treeSource
+                           ? ParamSource::Table
+                           : ParamSource::Tree;
+            p.device = key.left(sep);
+            p.measurement = key.mid(sep + 1);
+            p.dataType = r.dataType;
+            p.encoding = r.encoding;
+            p.compression = r.compression;
+            params.push_back(p);
+        }
+
+        // Device/table names for the metainfo bar (deduplicated, sorted).
+        {
+            QSet<QString> devices, tables;
+            for (const QString& key : qAsConst(keys))
+            {
+                const int sep = key.indexOf(QLatin1Char('\x01'));
+                (routes_.value(key).tableSource ? tables : devices)
+                    .insert(key.left(sep));
+            }
+            meta.devices = QStringList(devices.cbegin(), devices.cend());
+            meta.tables = QStringList(tables.cbegin(), tables.cend());
+            meta.devices.sort();
+            meta.tables.sort();
+            meta.deviceCount = meta.devices.size();
+            meta.tableCount = meta.tables.size();
+        }
+        meta.paramCount = keys.size();
+        meta.fileCount = files_.size();
+        meta.skippedFileCount = skipped;
+        for (const QString& f : qAsConst(files_))
+        {
+            meta.fileSize += QFileInfo(f).size();
+        }
+        // Global time range across all files (from the per-param slices).
+        bool haveAny = false;
+        qint64 firstTs = std::numeric_limits<qint64>::max();
+        qint64 lastTs = std::numeric_limits<qint64>::min();
+        for (const auto& r : routes_)
+        {
+            for (const auto& s : r.perFile)
+            {
+                if (s.count <= 0) continue;
+                firstTs = std::min(firstTs, s.startTs);
+                lastTs = std::max(lastTs, s.endTs);
+                haveAny = true;
+            }
+        }
+        if (haveAny)
+        {
+            meta.firstTs = firstTs;
+            meta.lastTs = lastTs;
+            meta.haveTimeRange = true;
+            firstTs_ = firstTs;
+            lastTs_ = lastTs;
+            haveRange_ = true;
+        }
+
+        // Time order + overlap detection per route: files must be visited
+        // oldest-first when concatenating rows. Overlapping time ranges mean
+        // the concatenation is not globally time-sorted (flagged to the UI).
+        qint64 overlapParamCount = 0;
+        for (auto it = routes_.begin(); it != routes_.end(); ++it)
+        {
+            ParamRoute& r = it.value();
+            QList<QPair<int, ParamSlice*>> byStart;
+            for (auto fit = r.perFile.begin(); fit != r.perFile.end(); ++fit)
+            {
+                byStart.append({fit.key(), &fit.value()});
+            }
+            std::sort(byStart.begin(), byStart.end(),
+                      [](const QPair<int, ParamSlice*>& a,
+                         const QPair<int, ParamSlice*>& b)
+                      { return a.second->startTs < b.second->startTs; });
+            r.fileOrder.clear();
+            for (const auto& e : byStart)
+            {
+                r.fileOrder.append({e.first, *e.second});
+            }
+            r.overlaps = false;
+            for (int i = 1; i < byStart.size(); ++i)
+            {
+                if (byStart[i].second->startTs <=
+                    byStart[i - 1].second->endTs)
+                {
+                    r.overlaps = true;
+                    break;
+                }
+            }
+            if (r.overlaps)
+            {
+                ++overlapParamCount;
+            }
+        }
+        meta.overlappingParamCount = overlapParamCount;
+        overlappingParamCount_ = overlapParamCount;
+
+        emit opened(meta, params);
+    }
+
+    // Read one file's footer and merge its schema/statistics into routes_.
+    // Returns false (and stays silent) when the file cannot be opened.
+    bool appendFileToRoutes(const QString& path, int fileIdx)
+    {
+        storage::TsFileReader reader;
+        if (reader.open(pathbridge::toLibPath(path).toStdString()) !=
+            common::E_OK)
+        {
+            return false;
+        }
+
+        const auto meta = reader.get_timeseries_metadata();
+        for (const auto& kv : meta)
+        {
+            const QString device =
+                QString::fromStdString(kv.first->get_device_name());
+            for (const auto& tsip : kv.second)
+            {
+                const QString measurement = QString::fromStdString(
+                    tsip->get_measurement_name().to_std_string());
+                const QString key = device + QLatin1Char('\x01') + measurement;
+                ParamRoute& r = routes_[key];
+                ParamSlice& s = r.perFile[fileIdx];
+                r.treeSource = true;
+                r.dataType = static_cast<int>(tsip->get_data_type());
+                if (const storage::Statistic* st =
+                        tsip->get_statistic())  // aligned: value statistic
+                {
+                    s.count = st->get_count();
+                    s.startTs = st->start_time_;
+                    s.endTs = st->get_end_time();
+                }
+                r.totalRows += s.count;
+            }
+        }
+
+        // Table model files: field columns become routable params too.
+        const auto tableSchemas = reader.get_all_table_schemas();
+        for (const auto& ts : tableSchemas)
+        {
+            if (ts == nullptr || ts->is_virtual_table())
+            {
+                continue;
+            }
+            const QString tableName =
+                QString::fromStdString(ts->get_table_name());
+            const auto names = ts->get_measurement_names();
+            const auto types = ts->get_data_types();
+            const auto categories = ts->get_column_categories();
+            for (size_t i = 0; i < names.size(); ++i)
+            {
+                if (categories[i] != common::ColumnCategory::FIELD)
+                {
+                    continue;
+                }
+                const QString key = tableName + QLatin1Char('\x01') +
+                                    QString::fromStdString(names[i]);
+                ParamRoute& r = routes_[key];
+                ParamSlice& s = r.perFile[fileIdx];
+                r.tableSource = true;
+                r.dataType = static_cast<int>(types[i]);
+            }
+        }
+        reader.close();
+        return true;
+    }
+
     void query(const ParamInfo& param, qint64 page)
     {
-        if (path_.isEmpty())
+        const bool multi = !files_.isEmpty();
+        if (!multi && path_.isEmpty())
         {
             emit queryFailed(QStringLiteral("no file open"));
             return;
@@ -272,44 +527,11 @@ public slots:
         }
         pendingParam_.reset();
 
-        storage::TsFileReader reader;
-        if (reader.open(path_.toStdString()) != common::E_OK)
-        {
-            emit queryFailed(QStringLiteral("TsFileReader could not open file"));
-            return;
-        }
-
-        // Paged query: queryByRow pushes offset/limit down (chunk/page level
-        // for dense devices), so paging does not decode skipped rows.
-        const qint64 offset = page * kPageSize;
-        storage::ResultSet* result = nullptr;
-        int q = common::E_OK;
-        if (param.source == ParamSource::Table)
-        {
-            q = reader.queryByRow(param.device.toStdString(),
-                                  {param.measurement.toStdString()},
-                                  static_cast<int>(offset),
-                                  static_cast<int>(kPageSize), result);
-        }
-        else
-        {
-            // Tree path query: device + "." + measurement.
-            std::vector<std::string> pathList{
-                param.device.toStdString() + "." + param.measurement.toStdString()};
-            q = reader.queryByRow(pathList, static_cast<int>(offset),
-                                  static_cast<int>(kPageSize), result);
-        }
-        if (q != common::E_OK || result == nullptr)
-        {
-            reader.close();
-            emit queryFailed(QStringLiteral("query failed (code %1)").arg(q));
-            return;
-        }
-
         SeriesData out;
         out.device = param.device;
         out.measurement = param.measurement;
         out.numeric = param.dataType != common::TEXT;
+        const qint64 offset = page * kPageSize;
         out.offset = offset;
 
         bool haveData = false;
@@ -325,66 +547,174 @@ public slots:
         sinceFlush.start();
         qint64 pageRows = 0;  // rows delivered for this page (across flushes)
 
-        bool hasNext = false;
-        while (true)
+        // Segment list for this page: single-file mode is one segment;
+        // directory mode splits the page window [offset, offset+kPageSize)
+        // across the param's files in time order.
+        struct Seg
         {
-            const int nextRet = result->next(hasNext);
-            if (nextRet != common::E_OK)
+            QString path;
+            qint64 localOffset;
+            int limit;
+        };
+        QVector<Seg> segs;
+        qint64 totalRows = -1;
+
+        if (!multi)
+        {
+            segs.append({path_, offset, static_cast<int>(kPageSize)});
+        }
+        else
+        {
+            const ParamRoute& r =
+                routes_.value(param.device + QLatin1Char('\x01') +
+                              param.measurement);
+            if (r.perFile.isEmpty())
             {
-                reader.destroy_query_data_set(result);
-                reader.close();
-                emit queryFailed(
-                    QStringLiteral("query iteration failed (code %1)").arg(nextRet));
+                emit queryFailed(QStringLiteral(
+                    "parameter not found in any loaded file"));
                 return;
             }
-            if (!hasNext)
+            totalRows = r.totalRows;
+            // Walk files in time order, converting the global page window
+            // into per-file (offset, limit) slices. Files missing this param
+            // contribute nothing and are skipped.
+            qint64 consumed = 0;
+            qint64 remaining = kPageSize;
+            for (const auto& e : r.fileOrder)
             {
-                break;
-            }
-            // RowRecord fields are 0-based: field 0 = time, field 1 = value.
-            storage::RowRecord* row = result->get_row_record();
-            if (row == nullptr)
-            {
-                continue;
-            }
-            const int64_t ts = row->get_field(0)->get_value<int64_t>();
-            double v = std::numeric_limits<double>::quiet_NaN();
-            QString text;
-            if (fieldToValues(row->get_field(1), v, text))
-            {
-                if (!text.isEmpty())
+                const qint64 count = e.second.count;
+                if (count <= 0 || remaining <= 0)
                 {
-                    out.text.push_back(text);
+                    continue;
                 }
-            }
-            out.ts.push_back(ts);
-            out.value.push_back(v);
-            if (!haveData || ts < minTs) minTs = ts;
-            if (!haveData || ts > maxTs) maxTs = ts;
-            haveData = true;
-
-            // Supersede check inside the loop: a new selection aborts this
-            // query early; the already-flushed chunks stay on screen until
-            // the new query's first chunk replaces them.
-            if (pendingParam_.has_value())
-            {
-                reader.destroy_query_data_set(result);
-                reader.close();
-                return;
-            }
-
-            if (out.ts.size() >= kFlushRows && sinceFlush.elapsed() >= 200)
-            {
-                pageRows += out.ts.size();
-                emit valuesChunk(out, /*done=*/false);
-                out.ts.clear();
-                out.value.clear();
-                out.text.clear();
-                sinceFlush.restart();
+                if (offset < consumed + count)
+                {
+                    const qint64 local = offset > consumed
+                                             ? offset - consumed
+                                             : 0;
+                    // Statistic counts can drift from the actual rows (e.g.
+                    // unflushed tail): clamp local to the count.
+                    const qint64 avail = count - local;
+                    const qint64 take = std::min(avail, remaining);
+                    if (take > 0)
+                    {
+                        segs.append({files_.at(e.first), local,
+                                     static_cast<int>(take)});
+                        remaining -= take;
+                    }
+                    if (remaining <= 0)
+                    {
+                        break;
+                    }
+                }
+                consumed += count;
             }
         }
-        reader.destroy_query_data_set(result);
-        reader.close();
+
+        for (const Seg& seg : qAsConst(segs))
+        {
+            storage::TsFileReader reader;
+            if (reader.open(pathbridge::toLibPath(seg.path).toStdString()) !=
+                common::E_OK)
+            {
+                emit queryFailed(QStringLiteral(
+                    "TsFileReader could not open %1").arg(seg.path));
+                return;
+            }
+
+            // Paged query: queryByRow pushes offset/limit down (chunk/page
+            // level for dense devices), so paging does not decode skipped
+            // rows.
+            storage::ResultSet* result = nullptr;
+            int q = common::E_OK;
+            if (param.source == ParamSource::Table)
+            {
+                q = reader.queryByRow(param.device.toStdString(),
+                                      {param.measurement.toStdString()},
+                                      static_cast<int>(seg.localOffset),
+                                      seg.limit, result);
+            }
+            else
+            {
+                // Tree path query: device + "." + measurement.
+                std::vector<std::string> pathList{
+                    param.device.toStdString() + "." +
+                    param.measurement.toStdString()};
+                q = reader.queryByRow(pathList,
+                                      static_cast<int>(seg.localOffset),
+                                      seg.limit, result);
+            }
+            if (q != common::E_OK || result == nullptr)
+            {
+                reader.close();
+                emit queryFailed(QStringLiteral("query failed (code %1)").arg(q));
+                return;
+            }
+
+            bool hasNext = false;
+            while (true)
+            {
+                const int nextRet = result->next(hasNext);
+                if (nextRet != common::E_OK)
+                {
+                    reader.destroy_query_data_set(result);
+                    reader.close();
+                    emit queryFailed(
+                        QStringLiteral("query iteration failed (code %1)")
+                            .arg(nextRet));
+                    return;
+                }
+                if (!hasNext)
+                {
+                    break;
+                }
+                // RowRecord fields are 0-based: field 0 = time, field 1 =
+                // value.
+                storage::RowRecord* row = result->get_row_record();
+                if (row == nullptr)
+                {
+                    continue;
+                }
+                const int64_t ts = row->get_field(0)->get_value<int64_t>();
+                double v = std::numeric_limits<double>::quiet_NaN();
+                QString text;
+                if (fieldToValues(row->get_field(1), v, text))
+                {
+                    if (!text.isEmpty())
+                    {
+                        out.text.push_back(text);
+                    }
+                }
+                out.ts.push_back(ts);
+                out.value.push_back(v);
+                if (!haveData || ts < minTs) minTs = ts;
+                if (!haveData || ts > maxTs) maxTs = ts;
+                haveData = true;
+
+                // Supersede check inside the loop: a new selection aborts
+                // this query early; the already-flushed chunks stay on
+                // screen until the new query's first chunk replaces them.
+                if (pendingParam_.has_value())
+                {
+                    reader.destroy_query_data_set(result);
+                    reader.close();
+                    return;
+                }
+
+                if (out.ts.size() >= kFlushRows &&
+                    sinceFlush.elapsed() >= 200)
+                {
+                    pageRows += out.ts.size();
+                    emit valuesChunk(out, /*done=*/false);
+                    out.ts.clear();
+                    out.value.clear();
+                    out.text.clear();
+                    sinceFlush.restart();
+                }
+            }
+            reader.destroy_query_data_set(result);
+            reader.close();
+        }
         pageRows += out.ts.size();
 
         // Fill the file-level time range lazily: the first query defines it,
@@ -407,7 +737,7 @@ public slots:
         // A full page implies more rows may follow. The exact series total
         // comes free from the metadata statistic (no drain needed).
         out.hasMore = pageRows >= kPageSize;
-        out.totalRows = seriesTotalRows(param);
+        out.totalRows = multi ? totalRows : seriesTotalRows(param);
         emit valuesChunk(out, /*done=*/true);
         emit timeRangeKnown(firstTs_, lastTs_, haveRange_);
     }
@@ -456,11 +786,28 @@ public slots:
         return total;
     }
 
+    void setFiles(const QStringList& paths)
+    {
+        // Multi-file mode: path_ stays empty; files_ carries the set.
+        // openFiles() fills it after the per-file open succeeds.
+        path_.clear();
+        files_.clear();
+        routes_.clear();
+        overlappingParamCount_ = 0;
+        haveRange_ = false;
+        firstTs_ = 0;
+        lastTs_ = 0;
+        Q_UNUSED(paths);
+    }
+
     void setFile(const QString& path)
     {
         // Upstream lib opens paths via CRT ::open() in the active code page;
         // bridge UTF-8 (Qt) paths to the ASCII 8.3 short path on Windows.
         path_ = pathbridge::toLibPath(path);
+        files_.clear();   // single-file mode: no directory aggregation
+        routes_.clear();
+        overlappingParamCount_ = 0;
         haveRange_ = false;
         firstTs_ = 0;
         lastTs_ = 0;
@@ -479,11 +826,28 @@ public:
     bool exportCsv(const ParamInfo& param, const QString& csvPath,
                    QString* errorText)
     {
-        if (path_.isEmpty())
+        // File list to concatenate: directory mode walks the param's route
+        // in time order; single-file mode is just that file.
+        QStringList sources;
+        if (!files_.isEmpty())
+        {
+            const ParamRoute& r = routes_.value(
+                param.device + QLatin1Char('\x01') + param.measurement);
+            for (const auto& e : r.fileOrder)
+            {
+                sources << files_.at(e.first);
+            }
+        }
+        else
+        {
+            sources << path_;
+        }
+        if (sources.isEmpty())
         {
             if (errorText) *errorText = QStringLiteral("no file open");
             return false;
         }
+
         QFile f(pathbridge::toLibPath(csvPath));
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
         {
@@ -491,10 +855,32 @@ public:
                 *errorText = QStringLiteral("cannot create %1").arg(csvPath);
             return false;
         }
-        storage::TsFileReader reader;
-        if (reader.open(path_.toStdString()) != common::E_OK)
+
+        f.write("Time,Value\n");
+        for (const QString& source : qAsConst(sources))
         {
-            if (errorText) *errorText = QStringLiteral("open failed");
+            if (!exportOneFile(source, param, f, errorText))
+            {
+                f.close();
+                return false;
+            }
+        }
+        f.close();
+        return f.error() == QFile::NoError;
+    }
+
+private:
+    // Full-range query on one file, rows written straight into f. Returns
+    // false (errorText set) on open/query failure.
+    bool exportOneFile(const QString& source, const ParamInfo& param,
+                       QFile& f, QString* errorText)
+    {
+        storage::TsFileReader reader;
+        if (reader.open(pathbridge::toLibPath(source).toStdString()) !=
+            common::E_OK)
+        {
+            if (errorText)
+                *errorText = QStringLiteral("open failed: %1").arg(source);
             return false;
         }
         storage::ResultSet* result = nullptr;
@@ -521,9 +907,7 @@ public:
             return false;
         }
 
-        f.write("Time,Value\n");
         bool hn = false;
-        qint64 rows = 0;
         // Fixed-precision formatting, no scientific notation: values are
         // formatted with up to 17 significant digits in plain decimal and
         // trailing zeros trimmed.
@@ -563,16 +947,15 @@ public:
                 f.write(buf);
             }
             f.write("\n");
-            ++rows;
         }
         reader.destroy_query_data_set(result);
         reader.close();
-        f.close();
-        return f.error() == QFile::NoError;
+        return true;
     }
-
-private:
-    QString path_;
+    QString path_;                   // single-file mode: the file
+    QStringList files_;              // directory mode: the loaded files
+    QHash<QString, ParamRoute> routes_;  // key: "device\x01measurement"
+    qint64 overlappingParamCount_ = 0;  // params whose files overlap in time
     bool repairAllowed_ = false;  // set after the user confirms
     bool repairAsked_ = false;
     bool haveRange_ = false;
@@ -632,6 +1015,17 @@ void TsFileDocument::openAsync(const QString& path)
         worker->repairAllowed_ = false;
         worker->setFile(path);
         worker->open(path);
+    });
+}
+
+void TsFileDocument::openFilesAsync(const QStringList& paths)
+{
+    // Multi-file open bypasses repair: unreadable files are skipped silently
+    // and counted in MetaInfo::skippedFileCount.
+    QMetaObject::invokeMethod(worker_, [worker = worker_, paths]
+    {
+        worker->setFiles(paths);
+        worker->openFiles(paths);
     });
 }
 

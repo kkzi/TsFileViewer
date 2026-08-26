@@ -38,8 +38,8 @@ Q_DECLARE_METATYPE(ParamInfo)
 
 struct MetaInfo
 {
-    QString path;
-    qint64 fileSize = 0;
+    QString path;           // file, or the directory in multi-file mode
+    qint64 fileSize = 0;    // single file: its size; directory: sum
     int deviceCount = 0;   // tree devices
     int tableCount = 0;    // real (non-virtual) tables
     int paramCount = 0;    // total measurements/columns
@@ -50,6 +50,10 @@ struct MetaInfo
     QStringList tables;
     bool repaired = false;       // open() truncated+sealed a corrupted tail
     qint64 truncatedBytes = 0;   // bytes dropped by the repair
+    // Multi-file mode: files actually loaded (corrupted ones are skipped).
+    int fileCount = 1;
+    int skippedFileCount = 0;    // unreadable files excluded from the set
+    qint64 overlappingParamCount = 0;  // params whose files overlap in time
 };
 Q_DECLARE_METATYPE(MetaInfo)
 
@@ -79,6 +83,10 @@ public:
     // A corrupted file triggers repairConfirmRequested(path, code); call
     // retryWithRepair(path, true/false) afterwards to proceed.
     void openAsync(const QString& path);
+    // Open several files at once: params aggregate across files into one
+    // device->param tree; a param present in several files has its values
+    // concatenated in file (time) order at query time.
+    void openFilesAsync(const QStringList& paths);
     // User answered the repair question: true = truncate+seal then open,
     // false = report the failure unchanged.
     void retryWithRepair(const QString& path, bool allow);

@@ -41,16 +41,15 @@ public:
     // Measurement row for a param, or an invalid index.
     QModelIndex indexOfParam(const ParamInfo& param) const;
     ParamInfo paramAt(const QModelIndex& measurementIndex) const;
+    // Data role carrying the index into params_ (avoids the O(n) ownership
+    // walk of paramAt on every activation).
+    enum { RoleParamIndex = Qt::UserRole + 1 };
     static bool isMeasurementRow(const QModelIndex& index)
     {
         return index.isValid() && index.parent().isValid();
     }
 
 private:
-    // True when the top-level row r is the device group owning param p
-    // (params_ groups consecutive entries by device in load order).
-    bool owns(const ParamInfo& p, int topLevelRow) const;
-
     QVector<ParamInfo> params_;
 };
 
@@ -73,7 +72,13 @@ public:
     // Append rows from a chunk (progressive loading). The chunk must belong
     // to the same series; a different key resets first.
     void appendChunk(const SeriesData& chunk);
+    // Release the per-row text vector's slack after a load: numeric series
+    // keep no text storage at all (~bytes/row otherwise).
+    void compactText();
     const SeriesData* series() const { return series_.get(); }
+    // Numeric cell formatter (NaN -> "-"): shared with the plot's tracer
+    // readout.
+    static QString formatValue(double v);
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     int columnCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -82,7 +87,6 @@ public:
                         int role = Qt::DisplayRole) const override;
 
 private:
-    static QString formatValue(double v);
 
     std::unique_ptr<SeriesData> series_;
 };

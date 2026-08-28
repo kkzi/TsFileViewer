@@ -8,6 +8,7 @@
 #include <QPolygonF>
 
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -104,8 +105,9 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
 
     QString currentDevice;
     QStandardItem* deviceItem = nullptr;
-    for (const auto& p : params)
+    for (int i = 0; i < params.size(); ++i)
     {
+        const ParamInfo& p = params.at(i);
         if (deviceItem == nullptr || p.device != currentDevice)
         {
             currentDevice = p.device;
@@ -127,6 +129,9 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
         }
         auto* nameItem = new QStandardItem(leafIcon(), p.measurement);
         nameItem->setEditable(false);
+        // Index into params_: paramAt() resolves through this role instead
+        // of the O(n) ownership walk.
+        nameItem->setData(i, RoleParamIndex);
         auto* typeItem = new QStandardItem(TsFileNames::dataType(p.dataType));
         typeItem->setEditable(false);
         typeItem->setToolTip(QStringLiteral("type=%1 encoding=%2 compression=%3")
@@ -164,48 +169,23 @@ ParamInfo ParamTreeModel::paramAt(const QModelIndex& measurementIndex) const
     {
         return {};
     }
-    const QModelIndex parent = measurementIndex.parent();
-    if (!parent.isValid())
+    // Always resolve through column 0 (the name column): the index the view
+    // hands us may be any column (double-click on the Type column etc.).
+    const QModelIndex nameIndex =
+        measurementIndex.sibling(measurementIndex.row(), 0);
+    // load() stored the index into params_ as a data role: O(1) resolution,
+    // no ownership walk over the device runs.
+    const QVariant v = data(nameIndex, RoleParamIndex);
+    if (!v.isValid())
     {
         return {};
     }
-    // Always resolve through column 0 (the name column): the index the view
-    // hands us may be any column (double-click on the Type column etc.).
-    const QModelIndex nameIndex = measurementIndex.sibling(measurementIndex.row(), 0);
-    const QString measurement = data(nameIndex, Qt::DisplayRole).toString();
-    for (const auto& p : params_)
+    const int i = v.toInt();
+    if (i < 0 || i >= params_.size())
     {
-        // Compare the measurement plus the owning ParamInfo instead of the
-        // displayed device label (table groups carry a "[table] " prefix).
-        if (p.measurement == measurement && owns(p, parent.row()))
-        {
-            return p;
-        }
+        return {};
     }
-    return {};
-}
-
-// Row-based ownership check: the load() loop groups consecutive params by
-// device in the same order, so top-level row r maps to the r-th device run.
-bool ParamTreeModel::owns(const ParamInfo& p, int topLevelRow) const
-{
-    if (topLevelRow < 0)
-    {
-        return false;
-    }
-    QString device;
-    for (const auto& q : params_)
-    {
-        if (q.device != device)
-        {
-            device = q.device;
-            if (--topLevelRow < 0)
-            {
-                return device == p.device;
-            }
-        }
-    }
-    return false;
+    return params_.at(i);
 }
 
 // ---- ValueTableModel --------------------------------------------------------
@@ -216,24 +196,54 @@ void ValueTableModel::setSeries(const SeriesData& series)
 {
     beginResetModel();
     series_ = std::make_unique<SeriesData>(series);
+    // The final row count is usually known from the metadata statistic:
+    // reserve once instead of growing (and briefly double-holding) all
+    // three vectors.
+    if (series.totalRows > 0)
+    {
+        const int n = static_cast<int>(qMin<qint64>(
+            series.totalRows, std::numeric_limits<int>::max()));
+        series_->ts.reserve(n);
+        series_->value.reserve(n);
+        series_->text.reserve(n);
+    }
     endResetModel();
+}
+
+// Drop the per-row text vector when it carries nothing (numeric series):
+// every empty QString still costs a pointer-sized slot per row.
+void ValueTableModel::compactText()
+{
+    if (series_ == nullptr)
+    {
+        return;
+    }
+    const auto trim = [](QVector<QString>& v)
+    {
+        int last = v.size() - 1;
+        while (last >= 0 && v.at(last).isEmpty())
+        {
+            --last;
+        }
+        if (last + 1 < v.size())
+        {
+            v.resize(last + 1);
+        }
+        v.squeeze();
+    };
+    trim(series_->text);
 }
 
 void ValueTableModel::appendChunk(const SeriesData& chunk)
 {
-    if (series_ == nullptr || series_->key() != chunk.key() ||
-        series_->offset != chunk.offset)
+    if (series_ == nullptr || series_->key() != chunk.key())
     {
         setSeries(chunk);
         return;
     }
     const int first = series_->ts.size();
     const int added = chunk.ts.size();
-    // Final chunk carries the page metadata.
-    if (chunk.hasMore)
-    {
-        series_->hasMore = chunk.hasMore;
-    }
+    // Final chunk carries the series metadata.
     if (chunk.totalRows > 0)
     {
         series_->totalRows = chunk.totalRows;
@@ -295,8 +305,7 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
     switch (index.column())
     {
         case ColNo:
-            return static_cast<qint64>(row + 1) +
-                   (series_->offset > 0 ? series_->offset : 0);
+            return static_cast<qint64>(row + 1);
         case ColTime:
             return QString::number(series_->ts[row] / 1e6, 'f', 6);
         case ColValue:

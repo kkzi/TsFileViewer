@@ -511,7 +511,7 @@ public slots:
         return true;
     }
 
-    void query(const ParamInfo& param, qint64 page)
+    void query(const ParamInfo& param)
     {
         const bool multi = !files_.isEmpty();
         if (!multi && path_.isEmpty())
@@ -531,8 +531,6 @@ public slots:
         out.device = param.device;
         out.measurement = param.measurement;
         out.numeric = param.dataType != common::TEXT;
-        const qint64 offset = page * kPageSize;
-        out.offset = offset;
 
         bool haveData = false;
         int64_t minTs = std::numeric_limits<int64_t>::max();
@@ -540,16 +538,13 @@ public slots:
 
         // Progressive delivery: flush the accumulated rows to the UI every
         // flushRows rows so the table and plot grow visibly during long
-        // queries instead of freezing until completion. Memory is bounded by
-        // the page size (one page = kPageSize rows in the model).
+        // queries instead of freezing until completion.
         constexpr int kFlushRows = 500000;
         QElapsedTimer sinceFlush;
         sinceFlush.start();
-        qint64 pageRows = 0;  // rows delivered for this page (across flushes)
 
-        // Segment list for this page: single-file mode is one segment;
-        // directory mode splits the page window [offset, offset+kPageSize)
-        // across the param's files in time order.
+        // Segment list: single-file mode is one segment; multi-file mode
+        // concatenates every file's full series in time order.
         struct Seg
         {
             QString path;
@@ -561,7 +556,7 @@ public slots:
 
         if (!multi)
         {
-            segs.append({path_, offset, static_cast<int>(kPageSize)});
+            segs.append({path_, 0, /*limit < 0 = unlimited*/ -1});
         }
         else
         {
@@ -575,39 +570,20 @@ public slots:
                 return;
             }
             totalRows = r.totalRows;
-            // Walk files in time order, converting the global page window
-            // into per-file (offset, limit) slices. Files missing this param
-            // contribute nothing and are skipped.
-            qint64 consumed = 0;
-            qint64 remaining = kPageSize;
+            // Walk files in time order, taking each file's full slice of
+            // this parameter. Files missing this param contribute nothing
+            // and are skipped.
             for (const auto& e : r.fileOrder)
             {
-                const qint64 count = e.second.count;
-                if (count <= 0 || remaining <= 0)
+                if (e.second.count <= 0)
                 {
                     continue;
                 }
-                if (offset < consumed + count)
-                {
-                    const qint64 local = offset > consumed
-                                             ? offset - consumed
-                                             : 0;
-                    // Statistic counts can drift from the actual rows (e.g.
-                    // unflushed tail): clamp local to the count.
-                    const qint64 avail = count - local;
-                    const qint64 take = std::min(avail, remaining);
-                    if (take > 0)
-                    {
-                        segs.append({files_.at(e.first), local,
-                                     static_cast<int>(take)});
-                        remaining -= take;
-                    }
-                    if (remaining <= 0)
-                    {
-                        break;
-                    }
-                }
-                consumed += count;
+                segs.append({files_.at(e.first), 0,
+                             // Statistic counts can drift from the actual
+                             // rows (e.g. unflushed tail): take everything,
+                             // the reader stops at the real end.
+                             -1});
             }
         }
 
@@ -622,9 +598,9 @@ public slots:
                 return;
             }
 
-            // Paged query: queryByRow pushes offset/limit down (chunk/page
-            // level for dense devices), so paging does not decode skipped
-            // rows.
+            // Row query: queryByRow pushes offset/limit down (chunk/page
+            // level for dense devices). limit < 0 = unlimited rows, so the
+            // whole segment streams without decoding anything twice.
             storage::ResultSet* result = nullptr;
             int q = common::E_OK;
             if (param.source == ParamSource::Table)
@@ -704,7 +680,6 @@ public slots:
                 if (out.ts.size() >= kFlushRows &&
                     sinceFlush.elapsed() >= 200)
                 {
-                    pageRows += out.ts.size();
                     emit valuesChunk(out, /*done=*/false);
                     out.ts.clear();
                     out.value.clear();
@@ -715,7 +690,6 @@ public slots:
             reader.destroy_query_data_set(result);
             reader.close();
         }
-        pageRows += out.ts.size();
 
         // Fill the file-level time range lazily: the first query defines it,
         // later ones widen it (matches TsFileStat's global min/max semantics).
@@ -734,9 +708,8 @@ public slots:
             }
         }
 
-        // A full page implies more rows may follow. The exact series total
-        // comes free from the metadata statistic (no drain needed).
-        out.hasMore = pageRows >= kPageSize;
+        // The exact series total comes free from the metadata statistic
+        // (no drain needed).
         out.totalRows = multi ? totalRows : seriesTotalRows(param);
         emit valuesChunk(out, /*done=*/true);
         emit timeRangeKnown(firstTs_, lastTs_, haveRange_);
@@ -1038,14 +1011,14 @@ void TsFileDocument::retryWithRepair(const QString& path, bool allow)
     });
 }
 
-void TsFileDocument::queryValuesAsync(const ParamInfo& param, qint64 page){
+void TsFileDocument::queryValuesAsync(const ParamInfo& param){
     // Mark the request so a running query can notice it at its next flush
     // point and abort; the invoke then delivers the new one. The lambda runs
     // on the worker thread (queued), so pendingParam_ stays single-threaded.
     emit supersedeRequested(param);
-    QMetaObject::invokeMethod(worker_, [worker = worker_, param, page]
+    QMetaObject::invokeMethod(worker_, [worker = worker_, param]
     {
-        worker->query(param, page);
+        worker->query(param);
     });
 }
 

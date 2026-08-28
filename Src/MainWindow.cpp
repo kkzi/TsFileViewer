@@ -53,16 +53,19 @@ QString humanSize(qint64 bytes)
     return QString::number(bytes) + QStringLiteral(" B");
 }
 
-double firstFinite(const QVector<double>& v)
-{
-    for (double x : v)
-    {
-        if (!std::isnan(x)) return x;
-    }
-    return std::numeric_limits<double>::quiet_NaN();
-}
+// Plot performance for very large series: QCustomPlot's adaptive sampling
+// still walks every visible point per replot, so multi-million-point views
+// lag on drag/zoom. Above this many visible points the graph switches to a
+// decimated envelope; below it, the raw points draw directly.
+constexpr qint64 kRawVisibleLimit = 2000000;
+// Envelope buckets (each contributes first/min/max/last, roughly 3 points).
+constexpr qint64 kEnvelopeBuckets = 1 << 18;
+// Above this many visible points the red sample markers are hidden: at that
+// density they overlap into a solid band anyway, and dropping them skips
+// the scatter pass's second O(visible) data walk per replot.
+constexpr qint64 kScatterVisibleLimit = 2000;
 
-// Sample rate for the paging-bar stats; kHz above 10 kHz for readability.
+// Sample rate for the values-bar stats; kHz above 10 kHz for readability.
 QString formatRate(double hz)
 {
     if (hz >= 10000.0)
@@ -70,6 +73,46 @@ QString formatRate(double hz)
         return QString::number(hz / 1000.0, 'f', 1) + QStringLiteral(" kHz");
     }
     return QString::number(hz, 'f', 1) + QStringLiteral(" Hz");
+}
+
+// Keep the sample at t (seconds) inside the 10%..90% band of the plot's x
+// view: pan the window when the point drifted past a band edge — zoom
+// unchanged, new data slides in on that side. Clamped at the series ends so
+// the window never shows empty space. The one rule for every
+// selected-sample sync (table row change, plot click, arrow stepping).
+void panToBand(QCustomPlot* plot, const SeriesData& series, double t)
+{
+    const QCPRange r = plot->xAxis->range();
+    const double span = r.size();
+    if (span <= 0)
+    {
+        return;
+    }
+    const double frac = (t - r.lower) / span;
+    if (frac < 0.1)
+    {
+        const double lower =
+            qMax(t - 0.1 * span, static_cast<double>(series.ts.first()) / 1e6);
+        plot->xAxis->setRange(lower, lower + span);
+    }
+    else if (frac > 0.9)
+    {
+        const double upper =
+            qMin(t + 0.1 * span, static_cast<double>(series.ts.last()) / 1e6);
+        plot->xAxis->setRange(upper - span, upper);
+    }
+}
+
+// Point count in [lower, upper] of the shared raw container (bisection).
+qint64 countInRange(const QCPGraphDataContainer* data, double lower, double upper)
+{
+    if (data == nullptr || data->isEmpty())
+    {
+        return 0;
+    }
+    const auto b = data->findBegin(lower);
+    const auto e = data->findEnd(upper);
+    return e - b;
 }
 }  // namespace
 
@@ -266,43 +309,31 @@ void MainWindow::setupUi()
     rightLayout->setSpacing(0);
     auto* right = new QSplitter(Qt::Vertical, rightPane);
 
-    // Paging bar, fixed height, outside any splitter.
+    // Values bar, fixed height, outside any splitter.
     // Height = left margin(4) + search(25) + spacing(4) so the values-table
     // header aligns with the parameter-tree header.
-    // Layout: param name | stretch | export | <<prev rows next>> | progress
-    auto* pagingBar = new QWidget(rightPane);
-    pagingBar->setFixedHeight(33);
-    paramNameLabel_ = new QLabel(QString(), pagingBar);
+    // Layout: param name | stats | stretch | export
+    auto* valuesBar = new QWidget(rightPane);
+    valuesBar->setFixedHeight(33);
+    paramNameLabel_ = new QLabel(QString(), valuesBar);
     paramNameLabel_->setMinimumWidth(120);
     // Muted stats beside the name: rows · time span · mean sample rate.
-    paramStatLabel_ = new QLabel(QString(), pagingBar);
+    paramStatLabel_ = new QLabel(QString(), valuesBar);
     paramStatLabel_->setStyleSheet(
         QStringLiteral("color: #667085; padding-left: 2px;"));
-    exportBtn_ = new QPushButton(tr("Export"), pagingBar);
+    exportBtn_ = new QPushButton(tr("Export"), valuesBar);
     exportBtn_->setFlat(true);
-    prevPage_ = new QPushButton(tr("<< Prev"), pagingBar);
-    pageInfo_ = new QLabel(tr("rows 1-0"), pagingBar);
-    nextPage_ = new QPushButton(tr("Next >>"), pagingBar);
-    prevPage_->setFlat(true);
-    nextPage_->setFlat(true);
     exportBtn_->setEnabled(false);
-    prevPage_->setEnabled(false);
-    nextPage_->setEnabled(false);
-    auto* pagingLayout = new QHBoxLayout(pagingBar);
-    pagingLayout->setContentsMargins(4, 0, 4, 0);
-    pagingLayout->setSpacing(4);
-    pagingLayout->addWidget(paramNameLabel_);
-    pagingLayout->addWidget(paramStatLabel_);
-    pagingLayout->addStretch(1);
-    pagingLayout->addWidget(exportBtn_);
-    pagingLayout->addWidget(prevPage_);
-    pagingLayout->addWidget(pageInfo_);
-    pagingLayout->addWidget(nextPage_);
-    connect(prevPage_, &QPushButton::clicked, this, [this] { loadPage(page_ - 1); });
-    connect(nextPage_, &QPushButton::clicked, this, [this] { loadPage(page_ + 1); });
+    auto* valuesBarLayout = new QHBoxLayout(valuesBar);
+    valuesBarLayout->setContentsMargins(4, 0, 4, 0);
+    valuesBarLayout->setSpacing(4);
+    valuesBarLayout->addWidget(paramNameLabel_);
+    valuesBarLayout->addWidget(paramStatLabel_);
+    valuesBarLayout->addStretch(1);
+    valuesBarLayout->addWidget(exportBtn_);
     connect(exportBtn_, &QPushButton::clicked, this, &MainWindow::exportCsv);
 
-    rightLayout->addWidget(pagingBar);
+    rightLayout->addWidget(valuesBar);
     // Table+plot inset by 4px; the paging bar stays full-width.
     auto* rightContent = new QWidget(rightPane);
     auto* rightContentLayout = new QVBoxLayout(rightContent);
@@ -319,55 +350,37 @@ void MainWindow::setupUi()
     valuesTable_->verticalHeader()->setDefaultSectionSize(20);
     valuesTable_->verticalHeader()->hide();  // No column shows row numbers (No column exists)
     valuesTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    valuesTable_->setSelectionMode(QAbstractItemView::SingleSelection);
     valuesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    // Double-click a row (or Enter on it): center that sample in the plot,
-    // zoom in, and place the tracer. Plain selection does NOT move the
-    // tracer (browsing rows must not repaint the plot).
-    const auto placeTracerOn = [this](const QModelIndex& idx)
+    // User selection (click or keyboard navigation) drives the plot sync:
+    // the tracer moves and the view pans so the selected sample stays in
+    // the 10%..90% band (zoom unchanged). Programmatic selections (plot
+    // click -> table) set suppressPlotSync_ and don't re-pan.
+    connect(valuesTable_->selectionModel(),
+            &QItemSelectionModel::selectionChanged, this, [this]
     {
-        const SeriesData* series = valueModel_->series();
-        if (series == nullptr || !idx.isValid() ||
-            idx.row() >= series->ts.size() || tracer_ == nullptr)
+        if (suppressPlotSync_)
         {
-            if (tracer_ != nullptr)
-            {
-                tracer_->setVisible(false);
-                plot_->replot(QCustomPlot::rpQueuedReplot);
-            }
+            suppressPlotSync_ = false;
             return;
         }
-        tracer_->setVisible(true);
-        tracer_->setGraphKey(
-            static_cast<double>(series->ts[idx.row()]) / 1e6);
-        plot_->replot(QCustomPlot::rpQueuedReplot);
-    };
-    connect(valuesTable_, &QTableView::doubleClicked, this,
-            [this, placeTracerOn](const QModelIndex& idx)
-    {
-        const SeriesData* series = valueModel_->series();
-        if (series == nullptr || !idx.isValid() ||
-            idx.row() >= series->ts.size())
-        {
-            return;
-        }
-        const double t = static_cast<double>(series->ts[idx.row()]) / 1e6;
-        // Center on the point with a ~200ms view (a few sawtooth periods
-        // at typical sample rates); if already tighter, keep the span.
-        const double span = std::min(plot_->xAxis->range().size(), 0.2);
-        plot_->xAxis->setRange(t - span / 2, t + span / 2);
-        plot_->replot();
-        placeTracerOn(idx);
+        syncPlotToRow(valuesTable_->currentIndex());
     });
-    // Enter on a selected row: same treatment (tracer + no recenter — the
-    // row is already chosen; just mark it).
-    auto* rowActivateAct = new QAction(tr("Mark row"), this);
-    addAction(rowActivateAct);
-    // Only while the table has focus, else Return would double-fire with
-    // the tree's load action.
+    // Double-click a row (or Enter on it): zoom to the marker-visible window
+    // centered on the sample and place the tracer.
+    connect(valuesTable_, &QTableView::doubleClicked, this,
+            [this](const QModelIndex& idx) { activateRow(idx); });
+    auto* rowActivateAct = new QAction(tr("Zoom to row"), this);
+    // Scoped to the table (with children), not the window: a window-wide
+    // Return shortcut would shadow the tree's load action while the table
+    // has focus.
+    rowActivateAct->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    rowActivateAct->setShortcuts(
+        QList<QKeySequence>{QKeySequence(Qt::Key_Return),
+                            QKeySequence(Qt::Key_Enter)});
     valuesTable_->addAction(rowActivateAct);
-    rowActivateAct->setShortcut(Qt::Key_Return);
     connect(rowActivateAct, &QAction::triggered, this,
-            [this, placeTracerOn] { placeTracerOn(valuesTable_->currentIndex()); });
+            [this] { activateRow(valuesTable_->currentIndex()); });
 
     plot_ = new QCustomPlot(right);
     plot_->legend->setVisible(false);  // no legend
@@ -396,61 +409,8 @@ void MainWindow::setupUi()
     // Plot -> table link: clicking near a curve sample centers that row in
     // the values table (finds the nearest sample by x, O(log) via bisection
     // since ts is sorted).
-    connect(plot_, &QCustomPlot::mousePress, this, [this](QMouseEvent* ev)
-    {
-        if (ev->button() != Qt::LeftButton)
-        {
-            return;
-        }
-        const SeriesData* series = valueModel_->series();
-        if (series == nullptr || series->ts.isEmpty() || plotGraph_ == nullptr)
-        {
-            return;
-        }
-        // Only when the click is on the graph (its selectable scatter).
-        const double x = plot_->xAxis->pixelToCoord(ev->pos().x());
-        const double y = plot_->yAxis->pixelToCoord(ev->pos().y());
-        // selectTest returns the pixel distance to the curve; treat
-        // <=8px as "on the curve" so plain background drags don't jump.
-        if (plotGraph_->selectTest(ev->pos(), false) > 8.0)
-        {
-            return;  // click not on the curve: plain drag, no table jump
-        }
-        // Nearest sample by bisection on ts (sorted ascending).
-        int lo = 0, hi = series->ts.size() - 1;
-        const double tx = x * 1e6;  // back to us
-        while (lo < hi)
-        {
-            const int mid = (lo + hi) / 2;
-            if (static_cast<double>(series->ts[mid]) < tx)
-            {
-                lo = mid + 1;
-            }
-            else
-            {
-                hi = mid;
-            }
-        }
-        // lo is the first >= tx; check lo-1 too for the true nearest.
-        int row = lo;
-        if (lo > 0 &&
-            std::abs(static_cast<double>(series->ts[lo - 1]) - tx) <
-                std::abs(static_cast<double>(series->ts[lo]) - tx))
-        {
-            row = lo - 1;
-        }
-        const QModelIndex idx = valueModel_->index(row, 1);
-        valuesTable_->setCurrentIndex(idx);
-        valuesTable_->scrollTo(idx, QAbstractItemView::PositionAtCenter);
-        // Explicit tracer placement here: plain selection no longer moves it.
-        if (tracer_ != nullptr)
-        {
-            tracer_->setVisible(true);
-            tracer_->setGraphKey(
-                static_cast<double>(series->ts[row]) / 1e6);
-            plot_->replot(QCustomPlot::rpQueuedReplot);
-        }
-    });
+    connect(plot_, &QCustomPlot::mousePress, this,
+            [this](QMouseEvent* ev) { onPlotMousePress(ev); });
     // Fixed-precision seconds on the x axis (no scientific notation). 6
     // decimals = microsecond resolution; when the view spans hundreds of
     // seconds the decimals are noise, so precision adapts to the zoom level.
@@ -489,6 +449,14 @@ void MainWindow::setupUi()
             static_cast<void (QCPAxis::*)(const QCPRange&)>(
                 &QCPAxis::rangeChanged),
             this, [this](const QCPRange& r) { onPlotXRangeChanged(r); });
+    // Left/Right on the focused plot walk the selected sample (same sync to
+    // the table as clicking a point). QCustomPlot takes focus on click
+    // (Qt::ClickFocus); its own key handling doesn't claim arrows, so an
+    // event filter sees them first.
+    plot_->installEventFilter(this);
+    // Left/Right on the focused table step the sample too (Up/Down keep
+    // their native row movement, which triggers the plot sync).
+    valuesTable_->installEventFilter(this);
     // Splitter now has two panes: table and plot.
     right->setStretchFactor(0, 1);
     right->setStretchFactor(1, 1);
@@ -534,8 +502,14 @@ void MainWindow::setupUi()
     connect(paramTree_, &QTreeView::doubleClicked, this,
             &MainWindow::onParamActivated);
     auto* activateAct = new QAction(tr("Load values"), this);
-    activateAct->setShortcut(Qt::Key_Return);
-    addAction(activateAct);
+    // Scoped to the tree (with children), not the window: a window-wide
+    // Return shortcut would shadow the values table's row-activation action
+    // while the table has focus.
+    activateAct->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    activateAct->setShortcuts(
+        QList<QKeySequence>{QKeySequence(Qt::Key_Return),
+                            QKeySequence(Qt::Key_Enter)});
+    paramTree_->addAction(activateAct);
     connect(activateAct, &QAction::triggered, this, &MainWindow::onParamActivated);
     // Ctrl+F focuses the search box (and selects its text for retyping).
     auto* findAct = new QAction(tr("Find parameter"), this);
@@ -545,28 +519,6 @@ void MainWindow::setupUi()
     {
         searchEdit_->setFocus();
         searchEdit_->selectAll();
-    });
-    // Arrow keys page through the loaded series; they respect the same
-    // enabled state as the Prev/Next buttons (disabled at bounds/loading).
-    auto* prevAct = new QAction(tr("Previous page"), this);
-    prevAct->setShortcut(Qt::Key_Left);
-    addAction(prevAct);
-    connect(prevAct, &QAction::triggered, this, [this]
-    {
-        if (prevPage_->isEnabled())
-        {
-            loadPage(page_ - 1);
-        }
-    });
-    auto* nextAct = new QAction(tr("Next page"), this);
-    nextAct->setShortcut(Qt::Key_Right);
-    addAction(nextAct);
-    connect(nextAct, &QAction::triggered, this, [this]
-    {
-        if (nextPage_->isEnabled())
-        {
-            loadPage(page_ + 1);
-        }
     });
     paramTree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(paramTree_, &QTreeView::customContextMenuRequested, this,
@@ -668,6 +620,31 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
             QApplication::postEvent(paramTree_,
                                     new QKeyEvent(ke->type(), ke->key(),
                                                   ke->modifiers()));
+            return true;
+        }
+    }
+    // Focused plot: all four arrows navigate the selection. Up/Down go
+    // through the table's selection (plot syncs), Left/Right step the
+    // sample (table syncs).
+    if (obj == plot_ && event->type() == QEvent::KeyPress)
+    {
+        auto* ke = static_cast<QKeyEvent*>(event);
+        if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right ||
+            ke->key() == Qt::Key_Up || ke->key() == Qt::Key_Down)
+        {
+            stepSelection(ke->key());
+            return true;  // the plot has no built-in arrow use
+        }
+    }
+    // Focused table: Left/Right would only shuffle the current column —
+    // redirect them to sample stepping (Up/Down keep their native row
+    // movement, which already triggers the plot sync).
+    if (obj == valuesTable_ && event->type() == QEvent::KeyPress)
+    {
+        auto* ke = static_cast<QKeyEvent*>(event);
+        if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right)
+        {
+            stepSelection(ke->key());
             return true;
         }
     }
@@ -799,84 +776,81 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
 
 void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
 {
+    const SeriesData* before = valueModel_->series();
+    // A model reset (new query) desyncs plotData_ from the rows: start a
+    // fresh container. Detected by series identity, not row counts — a
+    // count match between different series would silently append the new
+    // chunk onto the old container. Computed BEFORE appendChunk: a reset
+    // (different key) destroys the old series, leaving `before` dangling.
+    const bool fresh = before == nullptr || before->key() != chunk.key();
+    accumulateStats(chunk);
     valueModel_->appendChunk(chunk);
+    appendPlotData(chunk, fresh);
+    const SeriesData* series = valueModel_->series();
     if (!done)
     {
         // Progressive load: running row count in the status bar. The total
         // row count is unknown until the query completes, so the progress
         // bar stays in busy mode (no fake percentage).
-        const SeriesData* series = valueModel_->series();
         statusBar()->showMessage(
             tr("%1: loading... %2 rows")
                 .arg(chunk.key())
                 .arg(series ? series->ts.size() : chunk.ts.size()));
-        rebuildPlot();
+        // Replot throttle: every chunk's replot walks the whole visible
+        // range; on a multi-million-row series that dwarfs the query
+        // itself. The curve still grows in view, just at >=5 fps instead
+        // of once per 500k rows.
+        const qint64 now = loadClock_.elapsed();
+        if (lastLoadReplotMs_ < 0 || now - lastLoadReplotMs_ >= 200)
+        {
+            lastLoadReplotMs_ = now;
+            rebuildPlot();
+        }
         return;
     }
 
     busy_->hide();
     overlay_->end();
     loading_ = false;
-    const SeriesData* series = valueModel_->series();
     if (series == nullptr)
     {
         return;
     }
-    // Page info + navigation. hasMore is set when the page came back full;
-    // the series total (when the metadata provided it) yields the page count.
-    const qint64 first = series->offset + 1;
-    const qint64 last = series->offset + series->ts.size();
-    // Model resets (page change) restore default column widths; re-apply.
-    valuesTable_->horizontalHeader()->resizeSection(1, 160);
-    if (series->totalRows > 0)
-    {
-        const qint64 totalPages =
-            (series->totalRows + TsFileDocument::kPageSize - 1) /
-            TsFileDocument::kPageSize;
-        pageInfo_->setText(tr("page %1/%2  rows %3-%4")
-                               .arg(page_ + 1)
-                               .arg(totalPages)
-                               .arg(first)
-                               .arg(last));
-    }
-    else
-    {
-        pageInfo_->setText(tr("page %1+  rows %2-%3+")
-                               .arg(page_ + 1)
-                               .arg(first)
-                               .arg(last));
-    }
-    prevPage_->setEnabled(series->offset > 0);
-    nextPage_->setEnabled(series->hasMore);
-    exportBtn_->setEnabled(true);
-    if (series->hasMore)
-    {
-        statusBar()->showMessage(
-            tr("%1: page %2, rows %3-%4 (page size %5M rows; use Next to "
-               "continue)")
-                .arg(series->key())
-                .arg(page_ + 1)
-                .arg(first)
-                .arg(last)
-                .arg(TsFileDocument::kPageSize / 1000000.0, 0, 'f', 1),
-            8000);
-    }
-    else
-    {
-        statusBar()->showMessage(
-            tr("%1: %2 rows (end of data)").arg(series->key()).arg(series->ts.size()),
-            5000);
-    }
-    rebuildPlot();
+    // Release the per-row text vector's slack: numeric series keep none of
+    // it (a pointer-sized slot per row adds up on large series).
+    valueModel_->compactText();
+    finishValuesLoad(*series);
+}
 
-    // ---- paging-bar stats: rows · time span · mean rate -------------------
-    // Span and rate derive from the loaded page (first..last Time column);
-    // rate = (rows-1)/span, the mean sampling frequency across the page.
-    if (!series->ts.isEmpty())
+// Load-end work once the final chunk arrived.
+void MainWindow::finishValuesLoad(const SeriesData& series)
+{
+    // Model resets restore default column widths; re-apply.
+    valuesTable_->horizontalHeader()->resizeSection(1, 160);
+    statusBar()->showMessage(
+        tr("%1: %2 rows").arg(series.key()).arg(series.ts.size()), 5000);
+    // The 200ms replot throttle means the last chunks may sit beyond the x
+    // range of the previous rebuild: fit once more to the complete series
+    // (the loading overlay blocked interaction, so no user zoom is lost).
+    fitOnNextRebuild_ = true;
+    rebuildPlot();
+    // Large series: build the decimated overview once, then let the current
+    // view decide raw vs envelope.
+    if (series.ts.size() > kRawVisibleLimit)
+    {
+        envelopeData_ = buildEnvelope();
+        updateGraphData();
+    }
+    exportBtn_->setEnabled(true);
+
+    // ---- values-bar stats: rows · time span · mean rate -------------------
+    // Span and rate derive from the loaded series (first..last Time column);
+    // rate = (rows-1)/span, the mean sampling frequency across the series.
+    if (!series.ts.isEmpty())
     {
         const double spanS =
-            static_cast<double>(series->ts.last() - series->ts.first()) / 1e6;
-        const int n = series->ts.size();
+            static_cast<double>(series.ts.last() - series.ts.first()) / 1e6;
+        const int n = series.ts.size();
         QString rate = tr("-");
         if (n >= 2 && spanS > 0.0)
         {
@@ -898,28 +872,15 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
         paramStatLabel_->setToolTip(QString());
     }
 
-    // ---- stats: plot tooltip + status-bar analysis -------------------------
-    double vmin = std::numeric_limits<double>::quiet_NaN();
-    double vmax = std::numeric_limits<double>::quiet_NaN();
-    double vmean = 0;
-    qint64 finite = 0;
-    for (double v : series->value)
+    // ---- stats: running accumulators (O(1) here), plot tooltip -----------
+    // + status-bar analysis --------------------------------------------
+    if (series.measurement.endsWith(QLatin1String("SFID"), Qt::CaseSensitive))
     {
-        if (std::isnan(v)) continue;
-        if (std::isnan(vmin) || v < vmin) vmin = v;
-        if (std::isnan(vmax) || v > vmax) vmax = v;
-        vmean += v;
-        ++finite;
-    }
-    if (finite > 0) vmean /= finite;
-
-    // Status-bar analysis: SFID counters report the wrap behavior, others
-    // report min/max/mean.
-    if (series->measurement.endsWith(QLatin1String("SFID"), Qt::CaseSensitive))
-    {
+        // SFID counters report the wrap behavior: one pass over the loaded
+        // values (the running stats carry min/max/finite already).
         qint64 inc1 = 0, wraps = 0, violations = 0;
         double prev = std::numeric_limits<double>::quiet_NaN();
-        for (double v : series->value)
+        for (double v : series.value)
         {
             if (std::isnan(v)) continue;
             if (!std::isnan(prev))
@@ -944,20 +905,20 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
             tr("SFID: %1/%2 steps +1, %3 wrap(s) to min, %4 other step(s)"
                "  |  range %5..%6")
                 .arg(inc1)
-                .arg(finite - (finite > 0 ? 1 : 0))
+                .arg(statFinite_ - (statFinite_ > 0 ? 1 : 0))
                 .arg(wraps)
                 .arg(violations)
-                .arg(QString::number(vmin, 'g', 17))
-                .arg(QString::number(vmax, 'g', 17)));
+                .arg(QString::number(statVmin_, 'g', 17))
+                .arg(QString::number(statVmax_, 'g', 17)));
     }
-    else if (finite > 0)
+    else if (statFinite_ > 0)
     {
         analysisLabel_->setText(
             tr("min=%1  max=%2  mean=%3  n=%4")
-                .arg(QString::number(vmin, 'g', 17))
-                .arg(QString::number(vmax, 'g', 17))
-                .arg(QString::number(vmean, 'g', 17))
-                .arg(finite));
+                .arg(QString::number(statVmin_, 'g', 17))
+                .arg(QString::number(statVmax_, 'g', 17))
+                .arg(QString::number(statSum_ / statFinite_, 'g', 17))
+                .arg(statFinite_));
     }
     else
     {
@@ -965,24 +926,24 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     }
 
     QStringList tip;
-    tip << tr("Device: %1").arg(series->device);
-    tip << tr("Points: %1").arg(series->ts.size());
-    if (finite > 0)
+    tip << tr("Device: %1").arg(series.device);
+    tip << tr("Points: %1").arg(series.ts.size());
+    if (statFinite_ > 0)
     {
-        tip << tr("Min: %1").arg(QString::number(vmin, 'g', 17));
-        tip << tr("Max: %1").arg(QString::number(vmax, 'g', 17));
-        tip << tr("Mean: %1").arg(QString::number(vmean, 'g', 17));
+        tip << tr("Min: %1").arg(QString::number(statVmin_, 'g', 17));
+        tip << tr("Max: %1").arg(QString::number(statVmax_, 'g', 17));
+        tip << tr("Mean: %1").arg(QString::number(statSum_ / statFinite_, 'g', 17));
     }
-    if (finite != series->ts.size())
+    if (statNa_ > 0)
     {
-        tip << tr("Non-numeric rows: %1").arg(series->ts.size() - finite);
+        tip << tr("Non-numeric rows: %1").arg(statNa_);
     }
     plot_->setToolTip(tip.join(QLatin1Char('\n')));
-    if (!series->ts.isEmpty())
+    if (!series.ts.isEmpty())
     {
         rangeLabel_->setText(tr("Range: %1 s .. %2 s")
-                                 .arg(series->ts.first() / 1e6, 0, 'f', 3)
-                                 .arg(series->ts.last() / 1e6, 0, 'f', 3));
+                                 .arg(series.ts.first() / 1e6, 0, 'f', 3)
+                                 .arg(series.ts.last() / 1e6, 0, 'f', 3));
     }
     else
     {
@@ -994,87 +955,561 @@ void MainWindow::rebuildPlot()
 {
     const SeriesData* series = valueModel_->series();
     plot_->clearPlottables();
+    plotGraph_ = nullptr;
     if (series != nullptr && !series->ts.isEmpty())
     {
-        // X axis in raw microseconds timestamps (same as the Time column),
-        // so plot and table agree across pages.
-        QVector<double> x(series->ts.size());
-        for (int i = 0; i < series->ts.size(); ++i)
-        {
-            x[i] = static_cast<double>(series->ts[i]) / 1e6;
-        }
         auto* graph = plot_->addGraph();
-        graph->setData(x, series->value, true);
-        // Keep min/max of dense data visible at screen resolution: with
-        // ~1M points over ~1k px, plain line drawing collapses shapes into
-        // a band; adaptive sampling keeps the per-pixel min/max envelope.
+        // X axis in seconds (ts / 1e6, same base as the Time column). Raw
+        // points live in plotData_ (shared container, chunk-appended);
+        // rebuildPlot only re-attaches, so progressive chunks don't copy.
+        if (!plotData_.isNull())
+        {
+            graph->setData(plotData_);
+        }
+        // Adaptive sampling keeps the per-pixel min/max envelope for
+        // medium-density data; multi-million-point views switch to
+        // envelopeData_.
         graph->setAdaptiveSampling(true);
         // Straight lines between samples: values connect directly (a 0..7
         // counter shows as diagonal ramps), rather than stepped hold levels.
         graph->setLineStyle(QCPGraph::lsLine);
-        // Circle marker per visible sample; size scales with zoom (see
-        // onPlotXRangeChanged): small (cheap) when dense, larger when the
-        // view holds only a few hundred samples.
-        applyScatterSize(graph, series->ts.size());
+        applyScatterSize(graph);
         plotGraph_ = graph;
         // Selection tracer: marks the table's current row on the curve.
         if (tracer_ == nullptr)
         {
             tracer_ = new QCPItemTracer(plot_);
-            tracer_->setStyle(QCPItemTracer::tsCircle);
-            tracer_->setSize(10);
-            tracer_->setPen(QPen(QColor(0xd9, 0x30, 0x30), 2));
-            tracer_->setBrush(QBrush(QColor(0xd9, 0x30, 0x30)));
+            tracer_->setStyle(QCPItemTracer::tsCrosshair);
+            tracer_->setSize(12);
+            tracer_->setPen(QPen(QColor(0x1e, 0x8e, 0x3e), 1));
+            // Crosshair line only: no dot fill.
+            tracer_->setBrush(Qt::NoBrush);
+            // Readout of the traced sample: top-right corner of the plot.
+            tracerInfo_ = new QCPItemText(plot_);
+            tracerInfo_->setPositionAlignment(Qt::AlignTop | Qt::AlignRight);
+            tracerInfo_->position->setType(QCPItemPosition::ptAxisRectRatio);
+            tracerInfo_->position->setCoords(0.98, 0.02);
+            tracerInfo_->setTextAlignment(Qt::AlignLeft | Qt::AlignTop);
+            tracerInfo_->setFont(QFont(QStringLiteral("Consolas"), 9));
+            tracerInfo_->setColor(QColor(0x11, 0x14, 0x18));
+            tracerInfo_->setPadding(QMargins(4, 4, 4, 4));
+            tracerInfo_->setVisible(false);
         }
         tracer_->setGraph(graph);
-        // Fit the view only while the page is still loading (first fit);
-        // afterwards keep the user's zoom: re-fitting on every progressive
-        // chunk would snap the view back to the full page range and make
-        // zooming-in impossible (sawtooth stays compressed into bars).
-        if (fitOnNextRebuild_)
+        // While a query streams, keep following the data (the loading
+        // overlay blocks interaction, so there is no user zoom to preserve)
+        // — a fit on the first chunk alone would clip the global min/max
+        // that later chunks bring in. y comes from the running stats (O(1)),
+        // x from the sorted container's key range. After the query completes
+        // the view keeps the user's zoom.
+        if (fitOnNextRebuild_ || loading_)
         {
-            graph->rescaleAxes();
-            // Padding so the curve is not glued to the frame.
-            const double pad =
-                std::abs(plot_->yAxis->range().size()) * 0.05 + 1e-9;
-            plot_->yAxis->setRange(plot_->yAxis->range().lower - pad,
-                                   plot_->yAxis->range().upper + pad);
+            graph->rescaleKeyAxis();
+            if (statFinite_ > 0)
+            {
+                double pad = (statVmax_ - statVmin_) * 0.05;
+                if (pad <= 0)
+                {
+                    pad = std::abs(statVmax_) * 0.05 + 1e-9;
+                }
+                if (pad <= 0)
+                {
+                    pad = 1.0;  // flat line at zero
+                }
+                plot_->yAxis->setRange(statVmin_ - pad, statVmax_ + pad);
+            }
             fitOnNextRebuild_ = false;
         }
-    }
-    if (series != nullptr)
-    {
-        // No axis title (plot area stays maximal); current param already
-        // shown in the paging bar.
-        plot_->xAxis->setLabel(QString());
     }
     plot_->replot(QCustomPlot::rpQueuedReplot);
 }
 
-void MainWindow::applyScatterSize(QCPGraph* graph, int totalRows)
+void MainWindow::applyScatterSize(QCPGraph* graph)
 {
     if (graph == nullptr)
     {
         return;
     }
-    Q_UNUSED(totalRows);
-    graph->setScatterStyle(QCPScatterStyle(
-        QCPScatterStyle::ssCircle,
-        Qt::NoPen,                                 // no outline
-        QBrush(QColor(Qt::red)),                   // solid red fill
-        2));
+    // Visible point count decides marker visibility: dense views
+    // (>kScatterVisibleLimit) hide the red markers (they'd overlap into a
+    // band anyway, and skipping them saves the scatter pass's extra data
+    // walk per replot); zoomed-in views show them so individual samples
+    // stand out.
+    const QCPRange range = plot_->xAxis->range();
+    const qint64 visible =
+        countInRange(plotData_.data(), range.lower, range.upper);
+    const bool showMarkers = visible <= kScatterVisibleLimit;
+    // 6px red dot with a 1.5px white halo: the stroke straddles the circle
+    // path, so the visible red core is ~4.5px — small enough to stay a
+    // sample marker, large enough to read on high-DPI screens. With
+    // adaptive sampling the painted symbol count stays ~2 per pixel column,
+    // so the extra stroke pass is negligible.
+    graph->setScatterStyle(showMarkers
+                               ? QCPScatterStyle(QCPScatterStyle::ssCircle,
+                                                 QPen(QColor(0xff, 0xff, 0xff), 1.5),
+                                                 QBrush(QColor(Qt::red)),
+                                                 6)
+                               : QCPScatterStyle(QCPScatterStyle::ssNone));
     // Black curve on white; matches the monochrome theme.
     graph->setPen(QPen(QColor(0x1f, 0x23, 0x28), 1));
 }
 
 void MainWindow::onPlotXRangeChanged(const QCPRange&)
 {
-    // Retune marker size for the new density; queued replot avoids storms
-    // during wheel interaction.
-    applyScatterSize(plotGraph_,
-                     valueModel_->series() ? valueModel_->series()->ts.size()
-                                           : 0);
+    // Re-decide marker visibility for the new density (show only when the
+    // view is zoomed in enough); queued replot avoids storms during wheel
+    // interaction.
+    applyScatterSize(plotGraph_);
+    // Raw vs envelope switch for the new visible density.
+    updateGraphData();
+    // Refit y to the visible curve. Not while a query streams: the rebuild
+    // that triggered this fits y from the O(1) running stats right after.
+    if (!loading_)
+    {
+        rescaleYToVisible();
+    }
     plot_->replot(QCustomPlot::rpQueuedReplot);
+}
+
+// Append a chunk to the shared raw container (created empty on fresh=true).
+void MainWindow::appendPlotData(const SeriesData& chunk, bool fresh)
+{
+    if (fresh || plotData_.isNull())
+    {
+        plotData_ = QSharedPointer<QCPGraphDataContainer>::create();
+    }
+    QVector<QCPGraphData> pts;
+    pts.reserve(chunk.ts.size());
+    for (int i = 0; i < chunk.ts.size(); ++i)
+    {
+        pts.push_back({static_cast<double>(chunk.ts.at(i)) / 1e6,
+                       chunk.value.at(i)});
+    }
+    // Rows stream in file order and ts is monotonic within a file: sorted.
+    // (Multi-file concatenations with overlapping time ranges are flagged
+    // in the file tooltip; they keep the same sorted assumption the table
+    // click-bisection always made.)
+    plotData_->add(pts, true);
+}
+
+// One-pass min/max envelope over the loaded series: kEnvelopeBuckets buckets
+// across the time span, each contributing its first/min/max/last sample. NaN
+// rows stay NaN so line breaks survive decimation.
+QSharedPointer<QCPGraphDataContainer> MainWindow::buildEnvelope() const
+{
+    const SeriesData* series = valueModel_->series();
+    if (series == nullptr || series->ts.isEmpty() || plotData_.isNull())
+    {
+        return {};
+    }
+    const qint64 n = series->ts.size();
+    const double t0 = static_cast<double>(series->ts.first()) / 1e6;
+    const double t1 = static_cast<double>(series->ts.last()) / 1e6;
+    if (t1 <= t0)
+    {
+        return {};  // degenerate span: raw data is small anyway
+    }
+    const double scale = kEnvelopeBuckets / (t1 - t0);
+    QVector<QCPGraphData> pts;
+    pts.reserve(int(kEnvelopeBuckets * 3));
+    double bucketT0 = 0, bucketT1 = 0;
+    double first = 0, last = 0, vMin = 0, vMax = 0, vMinT = 0, vMaxT = 0;
+    bool hasFinite = false, bucketOpen = false;
+    qint64 bucket = -1;
+    auto closeBucket = [&]
+    {
+        pts.push_back({bucketT0, first});
+        if (hasFinite)
+        {
+            // Min/max in chronological order: the container expects
+            // non-decreasing keys.
+            if (vMinT <= vMaxT)
+            {
+                pts.push_back({vMinT, vMin});
+                pts.push_back({vMaxT, vMax});
+            }
+            else
+            {
+                pts.push_back({vMaxT, vMax});
+                pts.push_back({vMinT, vMin});
+            }
+        }
+        pts.push_back({bucketT1, last});
+    };
+    qint64 prevTs = std::numeric_limits<qint64>::min();
+    for (qint64 i = 0; i < n; ++i)
+    {
+        const qint64 ts = series->ts.at(int(i));
+        // Overlapping multi-file concatenations are not globally
+        // time-sorted: bucketing and the sorted-container logic assume
+        // monotonic keys, so give up (raw + adaptive sampling still draws).
+        if (ts < prevTs)
+        {
+            return {};
+        }
+        prevTs = ts;
+        const double t = static_cast<double>(ts) / 1e6;
+        const double v = series->value.at(int(i));
+        const qint64 b = qMin(kEnvelopeBuckets - 1,
+                              static_cast<qint64>((t - t0) * scale));
+        if (!bucketOpen || b != bucket)
+        {
+            if (bucketOpen)
+            {
+                // Close the bucket: first, min, max, last (NaN-only buckets
+                // collapse to one NaN point so line breaks survive).
+                closeBucket();
+            }
+            bucket = b;
+            bucketT0 = t;
+            first = v;
+            vMin = v;
+            vMax = v;
+            vMinT = t;
+            vMaxT = t;
+            hasFinite = !std::isnan(v);
+            bucketT1 = t;
+            last = v;
+            bucketOpen = true;
+            continue;
+        }
+        if (!std::isnan(v))
+        {
+            if (!hasFinite || v < vMin)
+            {
+                vMin = v;
+                vMinT = t;
+            }
+            if (!hasFinite || v > vMax)
+            {
+                vMax = v;
+                vMaxT = t;
+            }
+            hasFinite = true;
+        }
+        bucketT1 = t;
+        last = v;
+    }
+    if (bucketOpen)
+    {
+        closeBucket();
+    }
+    auto out = QSharedPointer<QCPGraphDataContainer>::create();
+    out->add(pts, true);
+    return out;
+}
+
+// Swap the graph between the raw container and the envelope for the current
+// x range, so pan/zoom replots stay interactive on multi-million-point
+// series.
+void MainWindow::updateGraphData()
+{
+    if (plotGraph_ == nullptr)
+    {
+        return;
+    }
+    const QCPRange r = plot_->xAxis->range();
+    const bool wantEnvelope =
+        !envelopeData_.isNull() &&
+        countInRange(plotData_.data(), r.lower, r.upper) > kRawVisibleLimit;
+    if (wantEnvelope == useEnvelope_)
+    {
+        return;
+    }
+    useEnvelope_ = wantEnvelope;
+    plotGraph_->setData(wantEnvelope ? envelopeData_ : plotData_);
+    plot_->replot(QCustomPlot::rpQueuedReplot);
+}
+
+// Auto-follow y: fit the value axis to the finite samples inside the current
+// x range. The value axis is not user-zoomable (drag/zoom act on x only), so
+// refitting on every x change never fights the user — panning to a quieter
+// region tightens the view, zooming out brings the spikes back.
+void MainWindow::rescaleYToVisible()
+{
+    if (plotGraph_ == nullptr)
+    {
+        return;
+    }
+    // inKeyRange=true: binary-search bounds + NaN-skipping walk over the
+    // graph's ACTIVE container (raw or envelope — the envelope preserves the
+    // visible min/max exactly), so the cost tracks the visible points, not
+    // the series length.
+    const QCPRange before = plot_->yAxis->range();
+    plotGraph_->rescaleValueAxis(false, true);
+    const QCPRange after = plot_->yAxis->range();
+    if (after == before)
+    {
+        return;  // no finite samples in view (all NaN): keep the range
+    }
+    // Same 5% breathing room the load-end fit uses.
+    const double pad = after.size() * 0.05;
+    plot_->yAxis->setRange(after.lower - pad, after.upper + pad);
+}
+
+void MainWindow::resetStats()
+{
+    statVmin_ = std::numeric_limits<double>::quiet_NaN();
+    statVmax_ = std::numeric_limits<double>::quiet_NaN();
+    statSum_ = 0;
+    statFinite_ = 0;
+    statNa_ = 0;
+}
+
+void MainWindow::accumulateStats(const SeriesData& chunk)
+{
+    for (double v : chunk.value)
+    {
+        if (std::isnan(v))
+        {
+            ++statNa_;
+            continue;
+        }
+        if (std::isnan(statVmin_) || v < statVmin_) statVmin_ = v;
+        if (std::isnan(statVmax_) || v > statVmax_) statVmax_ = v;
+        statSum_ += v;
+        ++statFinite_;
+    }
+}
+
+// Move the crosshair tracer to a sample and refresh the top-right readout
+// (row < 0 hides both).
+void MainWindow::updateTracer(int row)
+{
+    if (tracer_ == nullptr)
+    {
+        return;
+    }
+    const SeriesData* series = valueModel_->series();
+    const bool valid =
+        series != nullptr && row >= 0 && row < series->ts.size();
+    tracer_->setVisible(valid);
+    if (tracerInfo_ != nullptr)
+    {
+        tracerInfo_->setVisible(valid);
+    }
+    if (!valid)
+    {
+        plot_->replot(QCustomPlot::rpQueuedReplot);
+        return;
+    }
+    tracer_->setGraphKey(static_cast<double>(series->ts[row]) / 1e6);
+    if (tracerInfo_ != nullptr)
+    {
+        // Readout: timestamp (seconds, same format as the Time column) +
+        // param: value. Text rows keep their string; numeric cells render
+        // via the shared formatter.
+        QString value = row < series->text.size() && !series->text[row].isEmpty()
+                            ? series->text[row]
+                            : ValueTableModel::formatValue(series->value[row]);
+        tracerInfo_->setText(
+            QStringLiteral("%1\n%2: %3")
+                .arg(QString::number(series->ts[row] / 1e6, 'f', 6),
+                     series->measurement, value));
+    }
+    plot_->replot(QCustomPlot::rpQueuedReplot);
+}
+
+// Sync the table to a source row (plot click / arrow-key navigation):
+// select it, center it in the table when it is off-view, keep the sample
+// in the plot's 10%..90% band, place the tracer.
+void MainWindow::selectSampleRow(int row)
+{
+    const SeriesData* series = valueModel_->series();
+    if (series == nullptr || row < 0 || row >= series->ts.size())
+    {
+        return;
+    }
+    const QModelIndex idx = valueModel_->index(row, 1);
+    // Programmatic selection: don't let it re-trigger the plot sync
+    // (that would zoom away from the spot the user just clicked).
+    suppressPlotSync_ = true;
+    valuesTable_->setCurrentIndex(idx);
+    // Center the row only when it is off-view; visible rows stay put so
+    // consecutive arrow steps don't scroll the table around.
+    if (!valuesTable_->viewport()->rect()
+             .contains(valuesTable_->visualRect(idx)))
+    {
+        valuesTable_->scrollTo(idx, QAbstractItemView::PositionAtCenter);
+    }
+    // Same for the plot: the selected sample must always sit in the middle
+    // 80% of the view (10%..90%) — shared rule with the table-driven sync.
+    panToBand(plot_, *series, static_cast<double>(series->ts[row]) / 1e6);
+    updateTracer(row);
+}
+
+// Table row -> plot sync: pan so the selected sample stays inside the
+// 10%..90% band (zoom unchanged).
+void MainWindow::syncPlotToRow(const QModelIndex& idx)
+{
+    const SeriesData* series = valueModel_->series();
+    const int row = idx.isValid() ? idx.row() : -1;
+    if (series == nullptr || row < 0 || row >= series->ts.size())
+    {
+        return;
+    }
+    panToBand(plot_, *series, static_cast<double>(series->ts.at(row)) / 1e6);
+    plot_->replot();
+    updateTracer(row);
+}
+
+// Table row activation (double-click / Enter): zoom to the marker-visible
+// window centered on the row.
+void MainWindow::activateRow(const QModelIndex& idx)
+{
+    const SeriesData* series = valueModel_->series();
+    const int row = idx.isValid() ? idx.row() : -1;
+    if (series == nullptr || row < 0 || row >= series->ts.size())
+    {
+        return;
+    }
+    const int n = series->ts.size();
+    if (n > kScatterVisibleLimit)
+    {
+        // Window of kScatterVisibleLimit consecutive samples centered on
+        // the row — the widest span where red markers still show, with the
+        // selected sample exactly in the middle. ts is sorted, so the row's
+        // neighbors bound it directly.
+        const int half = static_cast<int>(kScatterVisibleLimit / 2 - 1);
+        const int lo = qMax(0, row - half);
+        const int hi = qMin(n - 1, row + half);
+        double a = static_cast<double>(series->ts.at(lo)) / 1e6;
+        double b = static_cast<double>(series->ts.at(hi)) / 1e6;
+        const double t = static_cast<double>(series->ts.at(row)) / 1e6;
+        // Duplicate timestamps can pack more points into the value range
+        // than the window's row count — the marker visibility check counts
+        // by value. Shrink symmetrically around the selected sample until
+        // it actually fits the threshold.
+        while (b > a && countInRange(plotData_.data(), a, b) > kScatterVisibleLimit)
+        {
+            a = t + (a - t) * 0.9;
+            b = t + (b - t) * 0.9;
+        }
+        if (b > a)
+        {
+            plot_->xAxis->setRange(a, b);
+        }
+        else
+        {
+            // Degenerate (identical timestamps): small window around the
+            // sample.
+            plot_->xAxis->setRange(t - 0.5, t + 0.5);
+        }
+    }
+    else
+    {
+        // Whole series already fits under the marker threshold.
+        plot_->xAxis->setRange(static_cast<double>(series->ts.first()) / 1e6,
+                               static_cast<double>(series->ts.last()) / 1e6);
+    }
+    plot_->replot();
+    updateTracer(row);
+}
+
+// Source row of the sample nearest to time t (seconds); bisection on the
+// sorted ts vector (-1 when the series is empty).
+int MainWindow::nearestSampleRow(double t) const
+{
+    const SeriesData* series = valueModel_->series();
+    if (series == nullptr || series->ts.isEmpty())
+    {
+        return -1;
+    }
+    const QVector<qint64>& ts = series->ts;
+    const double tx = t * 1e6;  // back to us
+    // First sample >= t by bisection (ts sorted ascending)...
+    int lo = 0, hi = ts.size() - 1;
+    while (lo < hi)
+    {
+        const int mid = (lo + hi) / 2;
+        if (static_cast<double>(ts[mid]) < tx)
+        {
+            lo = mid + 1;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    // ...then lo is the first >= t; check lo-1 too for the true nearest.
+    int row = lo;
+    if (lo > 0 &&
+        std::abs(static_cast<double>(ts[lo - 1]) - tx) <
+            std::abs(static_cast<double>(ts[lo]) - tx))
+    {
+        row = lo - 1;
+    }
+    return row;
+}
+
+void MainWindow::onPlotMousePress(QMouseEvent* ev)
+{
+    if (ev->button() != Qt::LeftButton)
+    {
+        return;
+    }
+    const SeriesData* series = valueModel_->series();
+    if (series == nullptr || series->ts.isEmpty() || plotGraph_ == nullptr)
+    {
+        return;
+    }
+    // Only when the click is on the graph (its selectable scatter).
+    // selectTest returns the pixel distance to the curve; treat
+    // <=8px as "on the curve" so plain background drags don't jump.
+    if (plotGraph_->selectTest(ev->pos(), false) > 8.0)
+    {
+        return;  // click not on the curve: plain drag, no table jump
+    }
+    const double x = plot_->xAxis->pixelToCoord(ev->pos().x());
+    selectSampleRow(nearestSampleRow(x));
+}
+
+// Arrow navigation shared by the table and the plot: Up/Down move the
+// table's selected row (the selectionChanged handler then syncs the plot —
+// the usual table-driven path); Left/Right step the selected sample
+// (plot-driven path: table row follows, view pans to keep the point in the
+// 10%..90% band).
+void MainWindow::stepSelection(int key)
+{
+    const SeriesData* series = valueModel_->series();
+    if (series == nullptr || series->ts.isEmpty())
+    {
+        return;
+    }
+    if (key == Qt::Key_Up || key == Qt::Key_Down)
+    {
+        const int rows = valueModel_->rowCount();
+        if (rows <= 0)
+        {
+            return;
+        }
+        const QModelIndex cur = valuesTable_->currentIndex();
+        const int r = cur.isValid() ? cur.row() : 0;
+        const int next = key == Qt::Key_Up
+                             ? qMax(0, r - 1)
+                             : qMin(rows - 1, r + 1);
+        // Plain selection change (NOT suppressed): the plot sync fires.
+        const QModelIndex idx =
+            valueModel_->index(next, cur.isValid() ? cur.column() : 1);
+        valuesTable_->setCurrentIndex(idx);
+        valuesTable_->scrollTo(idx, QAbstractItemView::EnsureVisible);
+        return;
+    }
+    // Left/Right: step the selected sample.
+    const QModelIndex cur = valuesTable_->currentIndex();
+    const int row = cur.isValid() ? cur.row() : -1;
+    if (row < 0)
+    {
+        return;
+    }
+    const int next = key == Qt::Key_Left
+                         ? qMax(0, row - 1)
+                         : qMin(static_cast<int>(series->ts.size()) - 1,
+                                row + 1);
+    if (next != row)
+    {
+        selectSampleRow(next);
+    }
 }
 
 void MainWindow::exportCsv()
@@ -1134,20 +1569,32 @@ void MainWindow::exportCsv()
     });
 }
 
-void MainWindow::clearContent()
+void MainWindow::clearPlot()
 {
-    valueModel_->setSeries(SeriesData{});
-    paramNameLabel_->setText(QString());
-    paramStatLabel_->setText(QString());
-    paramStatLabel_->setToolTip(QString());
     plot_->clearPlottables();
     plotGraph_ = nullptr;
     if (tracer_ != nullptr)
     {
         tracer_->setGraph(nullptr);
-        tracer_->setVisible(false);
     }
+    updateTracer(-1);
     plot_->replot();
+    plotData_.clear();
+    envelopeData_.clear();
+    useEnvelope_ = false;
+}
+
+void MainWindow::clearContent()
+{
+    valueModel_->setSeries(SeriesData{});
+    clearPlot();
+    paramNameLabel_->setText(QString());
+    paramStatLabel_->setText(QString());
+    paramStatLabel_->setToolTip(QString());
+    analysisLabel_->setText(QString());
+    plot_->setToolTip(QString());
+    exportBtn_->setEnabled(false);
+    resetStats();
 }
 
 void MainWindow::applySearch(const QString& text)
@@ -1172,7 +1619,7 @@ void MainWindow::onParamActivated()
     if (loading_)
     {
         statusBar()->showMessage(
-            tr("Still loading %1 — please wait for the current page to finish.")
+            tr("Still loading %1 — please wait for the current query to finish.")
                 .arg(currentParam_.key()),
             4000);
         return;
@@ -1195,6 +1642,14 @@ void MainWindow::onParamActivated()
         statusBar()->showMessage(tr("Nothing to load here — double-click a parameter (leaf row), not a group heading."), 4000);
         return;
     }
+    // Same parameter again: the data is already loaded and displayed —
+    // re-querying would stream it from disk for no visible change.
+    if (param == currentParam_ && exportBtn_->isEnabled())
+    {
+        statusBar()->showMessage(
+            tr("%1 is already loaded.").arg(param.key()), 2500);
+        return;
+    }
     currentParam_ = param;
     paramNameLabel_->setText(param.measurement);
     // Stats from the previous series are stale until the query completes.
@@ -1203,23 +1658,30 @@ void MainWindow::onParamActivated()
     codecLabel_->setText(tr("Codec: %1 / %2")
                              .arg(TsFileNames::encoding(param.encoding),
                                   TsFileNames::compression(param.compression)));
-    loadPage(0);
+    loadValues();
 }
 
-void MainWindow::loadPage(qint64 page)
+void MainWindow::loadValues()
 {
-    if (loading_ || currentParam_.measurement.isEmpty() || page < 0)
+    if (loading_ || currentParam_.measurement.isEmpty())
     {
         return;
     }
-    page_ = page;
     loading_ = true;
     overlay_->begin();
-    fitOnNextRebuild_ = true;  // new page: fit the view once, then keep zoom
+    fitOnNextRebuild_ = true;  // new query: fit the view once, then keep zoom
     busy_->show();
-    prevPage_->setEnabled(false);
-    nextPage_->setEnabled(false);
-    statusBar()->showMessage(
-        tr("Querying %1 (page %2)...").arg(currentParam_.key()).arg(page_ + 1));
-    doc_->queryValuesAsync(currentParam_, page_);
+    loadClock_.start();
+    lastLoadReplotMs_ = -1;  // first chunk replots immediately
+    // Drop the previous series immediately so a same-named parameter from
+    // another file cannot append onto the leftover rows, and the table does
+    // not keep showing stale data while the new series streams in.
+    valueModel_->setSeries(SeriesData{});
+    clearPlot();
+    resetStats();
+    analysisLabel_->setText(QString());
+    plot_->setToolTip(QString());
+    exportBtn_->setEnabled(false);
+    statusBar()->showMessage(tr("Querying %1...").arg(currentParam_.key()));
+    doc_->queryValuesAsync(currentParam_);
 }

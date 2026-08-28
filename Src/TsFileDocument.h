@@ -65,8 +65,6 @@ struct SeriesData
     QVector<double> value;  // NaN where the value is not numeric
     QVector<QString> text;  // non-empty only for STRING columns (parallel to value)
     bool numeric = true;    // false when the column holds text/boolean rows
-    qint64 offset = 0;      // absolute row index of ts[0] within the series
-    bool hasMore = false;   // final chunk only: a further page exists
     qint64 totalRows = -1;  // whole series row count from metadata (-1 unknown)
     QString key() const { return device + QLatin1Char('/') + measurement; }
 };
@@ -95,11 +93,10 @@ public:
     // the final chunk. queryFailed(QString) on error. Selecting a new
     // parameter while a query is running supersedes the old one (its
     // remaining chunks are dropped).
-    // Pages: rows [page * kPageSize, (page+1) * kPageSize). Page >= 0.
-    static constexpr qint64 kPageSize = 1000000;
-    void queryValuesAsync(const ParamInfo& param, qint64 page = 0);
+    // The whole series is streamed (no paging); limit < 0 = unlimited.
+    void queryValuesAsync(const ParamInfo& param);
 
-    // Export the parameter's FULL series (all rows, ignoring paging) to a
+    // Export the parameter's FULL series to a
     // UTF-8 CSV: header "Time,Value", plain decimal (no scientific).
     // Returns false on error (errorText set). Runs synchronously on the
     // worker thread pool — call from a QtConcurrent job, not the UI thread.

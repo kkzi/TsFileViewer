@@ -3,6 +3,7 @@
 #include "TsFileDocument.h"
 
 #include <QApplication>
+#include <QIcon>
 
 #include <string>
 #include <vector>
@@ -15,7 +16,9 @@
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
+    QApplication::setOrganizationName(QStringLiteral("FTS"));
     QApplication::setApplicationName(QStringLiteral("TsFileViewer"));
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/app.ico")));
 
 #ifdef _WIN32
     // The CRT delivers argv in the active code page (GBK on zh-CN) but the

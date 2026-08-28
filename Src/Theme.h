@@ -90,13 +90,17 @@ QSplitter::handle:vertical { height: 2px; }
 QMessageBox { background: #ffffff; }
 QMessageBox QLabel { color: #111418; }
 
-/* ---- scrollbars: flat, square ------------------------------------------ */
-QScrollBar:vertical { background: transparent; width: 12px; margin: 0; }
-QScrollBar::handle:vertical { background: #7a8694; min-height: 24px; }
-QScrollBar::handle:vertical:hover { background: #111418; }
-QScrollBar:horizontal { background: transparent; height: 12px; margin: 0; }
-QScrollBar::handle:horizontal { background: #7a8694; min-width: 24px; }
-QScrollBar::handle:horizontal:hover { background: #111418; }
+/* ---- scrollbars: flat, square, 20px thickness ---------------------------- */
+/* Idle handle: light Windows-style gray (unobtrusive); hover/pressed darken
+   to give interaction feedback. */
+QScrollBar:vertical { background: #f6f7f9; width: 20px; margin: 0; }
+QScrollBar::handle:vertical { background: #c9ced6; min-height: 32px; }
+QScrollBar::handle:vertical:hover { background: #9aa4b0; }
+QScrollBar::handle:vertical:pressed { background: #7a8694; }
+QScrollBar:horizontal { background: #f6f7f9; height: 20px; margin: 0; }
+QScrollBar::handle:horizontal { background: #c9ced6; min-width: 32px; }
+QScrollBar::handle:horizontal:hover { background: #9aa4b0; }
+QScrollBar::handle:horizontal:pressed { background: #7a8694; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0px; width: 0px; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 )";

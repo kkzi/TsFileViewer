@@ -2,7 +2,9 @@
 
 #include "TsFileDocument.h"
 
+#include <QDateTime>
 #include <QIcon>
+#include <QLocale>
 #include <QPainter>
 #include <QPixmap>
 #include <QPolygonF>
@@ -53,6 +55,10 @@ QIcon leafIcon()
     }();
     return icon;
 }
+// Data-integrity warning color for tree rows: params whose sources carry
+// contradictory footer statistics (likely a corrupted file in the set), or
+// that come from a repaired file. Red stays readable on the white theme.
+const QColor kSuspiciousColor(0xd9, 0x30, 0x30);
 }  // namespace
 
 // ---- ParamProxyModel --------------------------------------------------------
@@ -105,11 +111,23 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
 
     QString currentDevice;
     QStandardItem* deviceItem = nullptr;
+    bool deviceSuspicious = false;
     for (int i = 0; i < params.size(); ++i)
     {
         const ParamInfo& p = params.at(i);
         if (deviceItem == nullptr || p.device != currentDevice)
         {
+            // Close out the previous device group: red label when any of its
+            // params carries a data-integrity flag (whole-group hint).
+            if (deviceItem != nullptr && deviceSuspicious)
+            {
+                deviceItem->setForeground(kSuspiciousColor);
+                deviceItem->setToolTip(QStringLiteral(
+                    "%1\nOne or more parameters below have conflicting "
+                    "footer statistics across files (likely a corrupted "
+                    "file in the set); their data is shown as-is.")
+                    .arg(deviceItem->text()));
+            }
             currentDevice = p.device;
             // Table params are marked so a mixed file stays readable.
             const QString label =
@@ -126,9 +144,21 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
             auto* empty = new QStandardItem();
             empty->setEditable(false);
             appendRow({deviceItem, empty});
+            deviceSuspicious = false;
         }
         auto* nameItem = new QStandardItem(leafIcon(), p.measurement);
         nameItem->setEditable(false);
+        if (p.suspicious)
+        {
+            nameItem->setForeground(kSuspiciousColor);
+            nameItem->setToolTip(QStringLiteral(
+                "%1\nThe footer statistics of this parameter's files "
+                "conflict (overlapping time ranges; one file is likely "
+                "corrupted) or the file was repaired after truncation. "
+                "Values are shown as loaded.")
+                .arg(p.measurement));
+            deviceSuspicious = true;
+        }
         // Index into params_: paramAt() resolves through this role instead
         // of the O(n) ownership walk.
         nameItem->setData(i, RoleParamIndex);
@@ -139,6 +169,16 @@ void ParamTreeModel::load(const QVector<ParamInfo>& params)
                                       TsFileNames::encoding(p.encoding),
                                       TsFileNames::compression(p.compression)));
         deviceItem->appendRow({nameItem, typeItem});
+    }
+    // Last device group (loop closes groups on the NEXT device only).
+    if (deviceItem != nullptr && deviceSuspicious)
+    {
+        deviceItem->setForeground(kSuspiciousColor);
+        deviceItem->setToolTip(QStringLiteral(
+            "%1\nOne or more parameters below have conflicting "
+            "footer statistics across files (likely a corrupted "
+            "file in the set); their data is shown as-is.")
+            .arg(deviceItem->text()));
     }
 }
 
@@ -307,7 +347,7 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
         case ColNo:
             return static_cast<qint64>(row + 1);
         case ColTime:
-            return QString::number(series_->ts[row] / 1e6, 'f', 6);
+            return formatTimeUs(series_->ts[row]);
         case ColValue:
             if (row < series_->text.size() && !series_->text[row].isEmpty())
             {
@@ -328,7 +368,7 @@ QVariant ValueTableModel::headerData(int section, Qt::Orientation orientation, i
     switch (section)
     {
         case ColNo: return QStringLiteral("No");
-        case ColTime: return QStringLiteral("Time (s)");
+        case ColTime: return QStringLiteral("Time");
         case ColValue: return QStringLiteral("Value");
         default: return {};
     }
@@ -340,6 +380,21 @@ QString ValueTableModel::formatValue(double v)
     {
         return QStringLiteral("-");
     }
-    // Round-trip precision like TsFileStat's %.17g.
-    return QString::number(v, 'g', 17);
+    // Thousand-separated plain decimal, fixed 6 decimals: no scientific
+    // notation for large/small magnitudes. English locale = comma groups +
+    // point decimal separator.
+    static const QLocale loc(QLocale::English, QLocale::UnitedStates);
+    return loc.toString(v, 'f', 6);
+}
+
+QString ValueTableModel::formatTimeUs(qint64 ts)
+{
+    // QDateTime resolves milliseconds only; the microsecond tail comes from
+    // the raw value. Negative epochs floor toward -infinity so the fraction
+    // stays in [0, 1000).
+    const qint64 ms = ts / 1000;
+    const int usRemainder = static_cast<int>(ts - ms * 1000);
+    return QDateTime::fromMSecsSinceEpoch(ms).toString(
+               QStringLiteral("hh:mm:ss")) +
+           QStringLiteral(".%1").arg(usRemainder, 3, 10, QLatin1Char('0'));
 }

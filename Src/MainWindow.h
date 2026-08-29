@@ -11,6 +11,7 @@
 #include <QFutureWatcher>
 
 #include <limits>
+#include <optional>
 
 class QLabel;
 class QLineEdit;
@@ -61,6 +62,10 @@ private:
     // a solid band, and skipping them saves a data walk per replot).
     void applyScatterSize(class QCPGraph* graph);
     void onPlotXRangeChanged(const class QCPRange& range);
+    // Zoom bounds for the x axis (wheel zoom): out is capped at 1.2x the
+    // data range, in stops when fewer than kMinVisiblePoints stay visible.
+    // Adjusts r into bounds; returns true when the range changed.
+    bool clampXRange(class QCPRange& r) const;
     // Export the CURRENT parameter's full series to CSV:
     // header "Time,Value", no scientific notation.
     void exportCsv();
@@ -140,7 +145,7 @@ private:
     QNetworkAccessManager net_{this};  // update check
     QLabel* codecLabel_ = nullptr;     // toolbar: current param's codec
     QLabel* paramNameLabel_ = nullptr; // values bar: current param name
-    QLabel* paramStatLabel_ = nullptr; // values bar: rows · span · rate
+    QLabel* paramStatLabel_ = nullptr; // values bar: rows · span · rate · min/max/mean
     class QPushButton* exportBtn_ = nullptr;  // values bar: CSV export
 
     // models / data
@@ -168,6 +173,9 @@ private:
     // (ms on loadClock_; -1 = next chunk replots immediately).
     QElapsedTimer loadClock_;
     qint64 lastLoadReplotMs_ = -1;
+    // Last x range that passed clampXRange (zoom-in floor restores it when
+    // a wheel step would drop below the visible-point minimum).
+    std::optional<QCPRange> lastGoodXRange_;
     QFutureWatcher<bool> exportWatcher_;  // background CSV export
 
     // Running statistics for the loaded series (display + O(1) y fit while

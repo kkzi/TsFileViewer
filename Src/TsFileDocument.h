@@ -26,6 +26,11 @@ struct ParamInfo
     int dataType = 0;     // common::TSDataType
     int encoding = 0;     // common::TSEncoding
     int compression = 0;  // common::CompressionType
+    // Data-integrity flag for the tree view (red label): set when the
+    // sources' footer statistics contradict each other (overlapping time
+    // ranges across files — one of them is likely corrupted), or when the
+    // file needed a tail repair. The viewer still shows the data as-is.
+    bool suspicious = false;
     QString key() const { return device + QLatin1Char('/') + measurement; }
     bool operator==(const ParamInfo& o) const
     {
@@ -53,6 +58,7 @@ struct MetaInfo
     // Multi-file mode: files actually loaded (corrupted ones are skipped).
     int fileCount = 1;
     int skippedFileCount = 0;    // unreadable files excluded from the set
+    QStringList skippedFiles;    // their paths (tooltip / tree flagging)
     qint64 overlappingParamCount = 0;  // params whose files overlap in time
 };
 Q_DECLARE_METATYPE(MetaInfo)

@@ -64,6 +64,23 @@ constexpr qint64 kEnvelopeBuckets = 1 << 18;
 // density they overlap into a solid band anyway, and dropping them skips
 // the scatter pass's second O(visible) data walk per replot.
 constexpr qint64 kScatterVisibleLimit = 2000;
+// Zoom bounds: zooming out stops at data range * 1.2 (80%/120% of the data
+// min/max, so the curve never shrinks to a sliver in empty space), zooming
+// in stops when fewer than this many points stay on screen (viewing less
+// than a handful of samples has no information left).
+constexpr qint64 kMinVisiblePoints = 10;
+
+// Timestamp (microseconds since epoch) -> "yyyy-MM-dd hh:mm:ss.zzzzzz":
+// QDateTime resolves milliseconds, so the microsecond tail is appended from
+// the raw value.
+QString formatFullTimeUs(qint64 ts)
+{
+    const qint64 ms = ts / 1000;
+    const int usRemainder = static_cast<int>(ts - ms * 1000);
+    return QDateTime::fromMSecsSinceEpoch(ms).toString(
+               QStringLiteral("yyyy-MM-dd hh:mm:ss")) +
+           QStringLiteral(".%1").arg(usRemainder, 3, 10, QLatin1Char('0'));
+}
 
 // Sample rate for the values-bar stats; kHz above 10 kHz for readability.
 QString formatRate(double hz)
@@ -114,6 +131,44 @@ qint64 countInRange(const QCPGraphDataContainer* data, double lower, double uppe
     const auto e = data->findEnd(upper);
     return e - b;
 }
+
+// X-axis ticker: wall-clock labels ("hh:mm:ss.zzzzzz") for coordinates in
+// seconds since epoch. QDateTime only resolves milliseconds, so the label is
+// built the same way as ValueTableModel::formatTimeUs. The label width
+// follows the view span: microseconds below 0.5 s, whole seconds up to
+// ~1.5 days, date+time beyond (the day must stay visible).
+class ClockTicker : public QCPAxisTicker
+{
+public:
+    explicit ClockTicker(QCPAxis* axis) : axis_(axis) {}
+
+protected:
+    QString getTickLabel(double tick, const QLocale& locale, QChar formatChar,
+                         int precision) override
+    {
+        Q_UNUSED(locale)
+        Q_UNUSED(formatChar)
+        Q_UNUSED(precision)
+        const qint64 us = static_cast<qint64>(llround(tick * 1e6));
+        const qint64 ms = us / 1000;
+        const int usTail = static_cast<int>(us - ms * 1000);
+        const QDateTime dt = QDateTime::fromMSecsSinceEpoch(ms);
+        const double span = axis_->range().size();
+        if (span < 0.5)
+        {
+            return dt.toString(QStringLiteral("hh:mm:ss")) +
+                   QStringLiteral(".%1").arg(usTail, 3, 10, QLatin1Char('0'));
+        }
+        if (span < 86400.0 * 1.5)
+        {
+            return dt.toString(QStringLiteral("hh:mm:ss"));
+        }
+        return dt.toString(QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+    }
+
+private:
+    QCPAxis* axis_;  // owning axis: reads the live range for label width
+};
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
@@ -312,12 +367,13 @@ void MainWindow::setupUi()
     // Values bar, fixed height, outside any splitter.
     // Height = left margin(4) + search(25) + spacing(4) so the values-table
     // header aligns with the parameter-tree header.
-    // Layout: param name | stats | stretch | export
+    // Layout: param name | stretch | stats (right-aligned) | export
     auto* valuesBar = new QWidget(rightPane);
     valuesBar->setFixedHeight(33);
     paramNameLabel_ = new QLabel(QString(), valuesBar);
     paramNameLabel_->setMinimumWidth(120);
-    // Muted stats beside the name: rows · time span · mean sample rate.
+    // Muted stats right next to the export button: rows · span · rate ·
+    // min · max · mean (key:value form).
     paramStatLabel_ = new QLabel(QString(), valuesBar);
     paramStatLabel_->setStyleSheet(
         QStringLiteral("color: #667085; padding-left: 2px;"));
@@ -328,8 +384,8 @@ void MainWindow::setupUi()
     valuesBarLayout->setContentsMargins(4, 0, 4, 0);
     valuesBarLayout->setSpacing(4);
     valuesBarLayout->addWidget(paramNameLabel_);
-    valuesBarLayout->addWidget(paramStatLabel_);
     valuesBarLayout->addStretch(1);
+    valuesBarLayout->addWidget(paramStatLabel_);
     valuesBarLayout->addWidget(exportBtn_);
     connect(exportBtn_, &QPushButton::clicked, this, &MainWindow::exportCsv);
 
@@ -411,35 +467,14 @@ void MainWindow::setupUi()
     // since ts is sorted).
     connect(plot_, &QCustomPlot::mousePress, this,
             [this](QMouseEvent* ev) { onPlotMousePress(ev); });
-    // Fixed-precision seconds on the x axis (no scientific notation). 6
-    // decimals = microsecond resolution; when the view spans hundreds of
-    // seconds the decimals are noise, so precision adapts to the zoom level.
-    plot_->xAxis->setNumberFormat("f");
-    connect(plot_->xAxis,
-            static_cast<void (QCPAxis::*)(const QCPRange&)>(
-                &QCPAxis::rangeChanged),
-            this, [this](const QCPRange& r)
-    {
-        // Label precision follows the actual ticks: if the ticks carry
-        // fractional seconds, show them; whole-second ticks stay integers.
-        // Derive the step from consecutive tick positions.
-        const QVector<double> ticks = plot_->xAxis->tickVector();
-        double step = 1.0;
-        if (ticks.size() >= 2)
-        {
-            step = std::abs(ticks.at(1) - ticks.at(0));
-        }
-        int precision = 0;
-        if (step < 1.0)
-        {
-            precision = static_cast<int>(std::ceil(-std::log10(step)) + 0.5);
-            precision = qBound(1, precision, 6);
-        }
-        if (plot_->xAxis->numberPrecision() != precision)
-        {
-            plot_->xAxis->setNumberPrecision(precision);
-        }
-    });
+    // X axis labels are wall-clock time (ClockTicker: hh:mm:ss[.zzzzzz],
+    // date prefix when the view spans days). Fixed y labels: English locale
+    // groups thousands and 'f' never produces scientific notation.
+    plot_->setLocale(QLocale(QLocale::English, QLocale::UnitedStates));
+    QSharedPointer<ClockTicker> clockTicker(new ClockTicker(plot_->xAxis));
+    plot_->xAxis->setTicker(clockTicker);
+    plot_->yAxis->setNumberFormat("f");
+    plot_->yAxis->setNumberPrecision(6);
     plot_->xAxis->ticker()->setTickCount(5);
     // No axis titles: tick values carry the units; the freed space goes to
     // the plot area. Context (param name / codec) lives in the paging bar.
@@ -729,9 +764,9 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
     paramsLabel_->setText(tr("Params: %1").arg(meta.paramCount));
     rangeLabel_->setText(
         meta.haveTimeRange
-            ? tr("Range: %1 s .. %2 s")
-                  .arg(meta.firstTs / 1e6, 0, 'f', 3)
-                  .arg(meta.lastTs / 1e6, 0, 'f', 3)
+            ? tr("Range: %1 .. %2")
+                  .arg(formatFullTimeUs(meta.firstTs),
+                       formatFullTimeUs(meta.lastTs))
             : tr("Range: -"));
 
     // Secondary details live in the file label's tooltip.
@@ -742,7 +777,11 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
         tip << tr("Total size: %1").arg(humanSize(meta.fileSize));
         if (meta.skippedFileCount > 0)
         {
-            tip << tr("Skipped files could not be opened (corrupted tail?)");
+            tip << tr("Skipped files could not be opened (corrupted tail?):");
+            for (const QString& f : meta.skippedFiles)
+            {
+                tip << QStringLiteral("  ") + QDir::toNativeSeparators(f);
+            }
         }
     }
     else
@@ -843,28 +882,48 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
     }
     exportBtn_->setEnabled(true);
 
-    // ---- values-bar stats: rows · time span · mean rate -------------------
-    // Span and rate derive from the loaded series (first..last Time column);
-    // rate = (rows-1)/span, the mean sampling frequency across the series.
+    // ---- values-bar stats: rows · span · rate · min · max · mean ----------
+    // Span is the actual coverage (max ts - min ts), NOT last-first: a
+    // corrupted file's footer statistics can order the concatenation
+    // non-monotonically (last < first), and the span must stay a factual
+    // coverage measure in that case, not go negative. rate =
+    // (rows-1)/span, the mean sampling frequency across the series.
+    // Min/max/mean come from the running stats (finite rows only).
     if (!series.ts.isEmpty())
     {
+        qint64 minTs = series.ts.first();
+        qint64 maxTs = minTs;
+        for (qint64 t : series.ts)
+        {
+            if (t < minTs) minTs = t;
+            if (t > maxTs) maxTs = t;
+        }
         const double spanS =
-            static_cast<double>(series.ts.last() - series.ts.first()) / 1e6;
+            static_cast<double>(maxTs - minTs) / 1e6;
         const int n = series.ts.size();
         QString rate = tr("-");
         if (n >= 2 && spanS > 0.0)
         {
             rate = formatRate((n - 1) / spanS);
         }
-        paramStatLabel_->setText(
-            tr("%1 rows · %2 s span · %3")
-                .arg(n)
-                .arg(QString::number(spanS, 'f', 3), rate));
+        QString stats = tr("rows: %1  span: %2 s  rate: %3")
+                            .arg(n)
+                            .arg(QString::number(spanS, 'f', 3), rate);
+        if (statFinite_ > 0)
+        {
+            stats += tr("  min: %1  max: %2  mean: %3")
+                         .arg(ValueTableModel::formatValue(statVmin_),
+                              ValueTableModel::formatValue(statVmax_),
+                              ValueTableModel::formatValue(statSum_ / statFinite_));
+        }
+        paramStatLabel_->setText(stats);
         paramStatLabel_->setToolTip(
-            tr("Rows: %1\nDuration: %2 s (last row - first row of the "
-               "Time column)\nRate: %3 ((rows - 1) / duration)")
+            tr("Rows: %1\nDuration: %2 s (max - min of the "
+               "Time column)\nRate: %3 ((rows - 1) / duration)\n"
+               "Min/Max/Mean: finite rows only")
                 .arg(n)
-                .arg(QString::number(spanS, 'f', 6), rate));
+                .arg(QString::number(spanS, 'f', 6), rate)
+                .arg(statFinite_));
     }
     else
     {
@@ -908,16 +967,16 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
                 .arg(statFinite_ - (statFinite_ > 0 ? 1 : 0))
                 .arg(wraps)
                 .arg(violations)
-                .arg(QString::number(statVmin_, 'g', 17))
-                .arg(QString::number(statVmax_, 'g', 17)));
+                .arg(ValueTableModel::formatValue(statVmin_))
+                .arg(ValueTableModel::formatValue(statVmax_)));
     }
     else if (statFinite_ > 0)
     {
         analysisLabel_->setText(
             tr("min=%1  max=%2  mean=%3  n=%4")
-                .arg(QString::number(statVmin_, 'g', 17))
-                .arg(QString::number(statVmax_, 'g', 17))
-                .arg(QString::number(statSum_ / statFinite_, 'g', 17))
+                .arg(ValueTableModel::formatValue(statVmin_),
+                     ValueTableModel::formatValue(statVmax_),
+                     ValueTableModel::formatValue(statSum_ / statFinite_))
                 .arg(statFinite_));
     }
     else
@@ -930,9 +989,9 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
     tip << tr("Points: %1").arg(series.ts.size());
     if (statFinite_ > 0)
     {
-        tip << tr("Min: %1").arg(QString::number(statVmin_, 'g', 17));
-        tip << tr("Max: %1").arg(QString::number(statVmax_, 'g', 17));
-        tip << tr("Mean: %1").arg(QString::number(statSum_ / statFinite_, 'g', 17));
+        tip << tr("Min: %1").arg(ValueTableModel::formatValue(statVmin_));
+        tip << tr("Max: %1").arg(ValueTableModel::formatValue(statVmax_));
+        tip << tr("Mean: %1").arg(ValueTableModel::formatValue(statSum_ / statFinite_));
     }
     if (statNa_ > 0)
     {
@@ -941,9 +1000,9 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
     plot_->setToolTip(tip.join(QLatin1Char('\n')));
     if (!series.ts.isEmpty())
     {
-        rangeLabel_->setText(tr("Range: %1 s .. %2 s")
-                                 .arg(series.ts.first() / 1e6, 0, 'f', 3)
-                                 .arg(series.ts.last() / 1e6, 0, 'f', 3));
+        rangeLabel_->setText(tr("Range: %1 .. %2")
+                                 .arg(formatFullTimeUs(series.ts.first()),
+                                      formatFullTimeUs(series.ts.last())));
     }
     else
     {
@@ -1039,14 +1098,13 @@ void MainWindow::applyScatterSize(QCPGraph* graph)
     const qint64 visible =
         countInRange(plotData_.data(), range.lower, range.upper);
     const bool showMarkers = visible <= kScatterVisibleLimit;
-    // 6px red dot with a 1.5px white halo: the stroke straddles the circle
-    // path, so the visible red core is ~4.5px — small enough to stay a
-    // sample marker, large enough to read on high-DPI screens. With
-    // adaptive sampling the painted symbol count stays ~2 per pixel column,
-    // so the extra stroke pass is negligible.
+    // 6px red dot, no outline: the curve is only 1px and draws under the
+    // markers, so a white halo would erase the line between nearby samples
+    // (invisible on the white plot background). Plain red reads against
+    // both the black curve and the background.
     graph->setScatterStyle(showMarkers
                                ? QCPScatterStyle(QCPScatterStyle::ssCircle,
-                                                 QPen(QColor(0xff, 0xff, 0xff), 1.5),
+                                                 Qt::NoPen,
                                                  QBrush(QColor(Qt::red)),
                                                  6)
                                : QCPScatterStyle(QCPScatterStyle::ssNone));
@@ -1054,8 +1112,74 @@ void MainWindow::applyScatterSize(QCPGraph* graph)
     graph->setPen(QPen(QColor(0x1f, 0x23, 0x28), 1));
 }
 
+// Clamp the x view into the zoom bounds derived from the loaded data:
+// - zoom-out cap: [0.8*dataMin, 1.2*dataMax] — beyond that the plot shows
+//   mostly empty space, so the range is pulled back to the cap (keeping the
+//   wheel center where the user zoomed);
+// - zoom-in floor: a range showing fewer than kMinVisiblePoints is refused;
+//   the previous (still legal) range is restored.
+// Returns the (possibly adjusted) range to set, and false when nothing needs
+// changing. Returns true with an unchanged range when no data is loaded
+// (nothing to clamp against).
+bool MainWindow::clampXRange(QCPRange& r) const
+{
+    if (plotData_.isNull() || plotData_->isEmpty())
+    {
+        return false;
+    }
+    bool foundRange = false;
+    const QCPRange data = plotData_->keyRange(foundRange);
+    if (!foundRange)
+    {
+        return false;  // e.g. all-NaN values: nothing sane to clamp against
+    }
+    // Zoom-in floor: fewer visible points than the floor — restore the last
+    // legal range (lastGoodXRange_ is updated only through this gate).
+    if (countInRange(plotData_.data(), r.lower, r.upper) < kMinVisiblePoints)
+    {
+        if (lastGoodXRange_.has_value() &&
+            lastGoodXRange_->lower != r.lower &&
+            lastGoodXRange_->upper != r.upper)
+        {
+            r = *lastGoodXRange_;
+            return true;
+        }
+        // No legal predecessor (e.g. the whole series has fewer points than
+        // the floor): keep the full data range.
+        r = data;
+        return true;
+    }
+    // Zoom-out cap: 20% padding on each side of the data range.
+    const double loCap = data.lower - 0.2 * data.size();
+    const double hiCap = data.upper + 0.2 * data.size();
+    if (r.lower < loCap || r.upper > hiCap)
+    {
+        r.lower = qMax(r.lower, loCap);
+        r.upper = qMin(r.upper, hiCap);
+        if (r.lower >= r.upper)
+        {
+            r = data;  // degenerate after clamping: fall back to the data
+        }
+        return true;
+    }
+    return false;
+}
+
 void MainWindow::onPlotXRangeChanged(const QCPRange&)
 {
+    // Zoom bounds enforcement happens here (wheel zoom goes through
+    // scaleRange -> setRange -> rangeChanged). setRange from inside a
+    // rangeChanged handler is safe (no recursion: the clamped value is
+    // already inside the bounds).
+    QCPRange r = plot_->xAxis->range();
+    if (clampXRange(r))
+    {
+        plot_->xAxis->setRange(r);
+    }
+    else
+    {
+        lastGoodXRange_ = r;
+    }
     // Re-decide marker visibility for the new density (show only when the
     // view is zoomed in enough); queued replot avoids storms during wheel
     // interaction.
@@ -1296,7 +1420,7 @@ void MainWindow::updateTracer(int row)
     tracer_->setGraphKey(static_cast<double>(series->ts[row]) / 1e6);
     if (tracerInfo_ != nullptr)
     {
-        // Readout: timestamp (seconds, same format as the Time column) +
+        // Readout: wall-clock timestamp (same format as the Time column) +
         // param: value. Text rows keep their string; numeric cells render
         // via the shared formatter.
         QString value = row < series->text.size() && !series->text[row].isEmpty()
@@ -1304,7 +1428,7 @@ void MainWindow::updateTracer(int row)
                             : ValueTableModel::formatValue(series->value[row]);
         tracerInfo_->setText(
             QStringLiteral("%1\n%2: %3")
-                .arg(QString::number(series->ts[row] / 1e6, 'f', 6),
+                .arg(ValueTableModel::formatTimeUs(series->ts[row]),
                      series->measurement, value));
     }
     plot_->replot(QCustomPlot::rpQueuedReplot);
@@ -1582,6 +1706,7 @@ void MainWindow::clearPlot()
     plotData_.clear();
     envelopeData_.clear();
     useEnvelope_ = false;
+    lastGoodXRange_.reset();
 }
 
 void MainWindow::clearContent()

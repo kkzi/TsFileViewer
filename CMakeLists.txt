@@ -224,3 +224,31 @@ else()
         Threads::Threads
     )
 endif()
+
+# ---- SpanProbe ------------------------------------------------------------
+# Dev probe: per-file footer statistics vs actual first/last rows for one
+# measurement (multi-file concat-order diagnostics). Not shipped.
+add_executable(SpanProbe Tools/SpanProbe.cpp)
+add_dependencies(SpanProbe tsfile-ext)
+target_include_directories(SpanProbe PRIVATE ${TSFILE_INCLUDE_DIR})
+if(WIN32)
+    target_compile_options(SpanProbe PRIVATE /Zc:__cplusplus /utf-8)
+    target_link_libraries(SpanProbe PRIVATE
+        ${TSFILE_LIB_DIR}/tsfile.lib
+        ${TSFILE_LIB_DIR}/snappy.lib
+        ${TSFILE_LIB_DIR}/LZ4.lib
+        ${TSFILE_LIB_DIR}/lzokay.lib
+        ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
+        Qt5::Core
+    )
+else()
+    target_link_libraries(SpanProbe PRIVATE
+        ${TSFILE_LIB_DIR}/libtsfile.a
+        ${TSFILE_LIB_DIR}/libsnappy.a
+        ${TSFILE_LIB_DIR}/libLZ4.a
+        ${TSFILE_LIB_DIR}/liblzokay.a
+        ${TSFILE_LIB_DIR}/libzlibstatic.a
+        Threads::Threads
+        Qt5::Core
+    )
+endif()

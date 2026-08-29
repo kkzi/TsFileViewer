@@ -278,6 +278,15 @@ public slots:
         meta.fileSize = fi.size();
         meta.repaired = recovered;
         meta.truncatedBytes = truncatedBytes;
+        // A repaired file lost its corrupted tail (crashed write): the tree
+        // flags every param red so the truncation is visible, not silent.
+        if (recovered)
+        {
+            for (ParamInfo& p : params)
+            {
+                p.suspicious = true;
+            }
+        }
 
         emit opened(meta, params);
     }
@@ -305,12 +314,14 @@ public slots:
         meta.path = paths.size() == 1 ? paths.first() : QString();
 
         int skipped = 0;
+        QStringList skippedFiles;
         QStringList loadedFiles;
         for (const QString& path : paths)
         {
             if (!appendFileToRoutes(path, loadedFiles.size()))
             {
                 ++skipped;
+                skippedFiles << path;
                 continue;
             }
             loadedFiles << path;
@@ -352,6 +363,11 @@ public slots:
             p.dataType = r.dataType;
             p.encoding = r.encoding;
             p.compression = r.compression;
+            // Overlapping footer statistics across files: one of the files is
+            // likely corrupted (a truncated write leaves stale statistics) —
+            // flag the param so the tree can render it in red. The data
+            // itself is still concatenated and shown as-is.
+            p.suspicious = r.overlaps;
             params.push_back(p);
         }
 
@@ -440,6 +456,7 @@ public slots:
         }
         meta.overlappingParamCount = overlapParamCount;
         overlappingParamCount_ = overlapParamCount;
+        meta.skippedFiles = skippedFiles;
 
         emit opened(meta, params);
     }

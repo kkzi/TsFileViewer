@@ -53,7 +53,7 @@ private:
     QVector<ParamInfo> params_;
 };
 
-// Table model for the selected series: No | Time (us) | Rel (s) | Value.
+// Table model for the selected series: No | Time | Value.
 class ValueTableModel : public QAbstractTableModel
 {
     Q_OBJECT
@@ -76,9 +76,14 @@ public:
     // keep no text storage at all (~bytes/row otherwise).
     void compactText();
     const SeriesData* series() const { return series_.get(); }
-    // Numeric cell formatter (NaN -> "-"): shared with the plot's tracer
-    // readout.
+    // Numeric cell formatter (NaN -> "-"): thousand separators, fixed 6
+    // decimals, no scientific notation. Shared with the plot tracer readout
+    // and the stats labels.
     static QString formatValue(double v);
+    // Timestamp (microseconds since epoch) -> "hh:mm:ss.zzzzzz" (clock time,
+    // date omitted). The microsecond tail is appended manually because
+    // QDateTime only resolves milliseconds.
+    static QString formatTimeUs(qint64 ts);
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     int columnCount(const QModelIndex& parent = QModelIndex()) const override;

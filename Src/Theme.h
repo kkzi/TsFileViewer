@@ -90,14 +90,15 @@ QSplitter::handle:vertical { height: 2px; }
 QMessageBox { background: #ffffff; }
 QMessageBox QLabel { color: #111418; }
 
-/* ---- scrollbars: flat, square, 20px thickness ---------------------------- */
+/* ---- scrollbars: flat, square, 10px thickness ---------------------------- */
 /* Idle handle: light Windows-style gray (unobtrusive); hover/pressed darken
-   to give interaction feedback. */
-QScrollBar:vertical { background: #f6f7f9; width: 20px; margin: 0; }
+   to give interaction feedback. Half-thickness (10px) keeps the data area
+   maximal; the handle's min sizes keep it grabbable. */
+QScrollBar:vertical { background: #f6f7f9; width: 10px; margin: 0; }
 QScrollBar::handle:vertical { background: #c9ced6; min-height: 32px; }
 QScrollBar::handle:vertical:hover { background: #9aa4b0; }
 QScrollBar::handle:vertical:pressed { background: #7a8694; }
-QScrollBar:horizontal { background: #f6f7f9; height: 20px; margin: 0; }
+QScrollBar:horizontal { background: #f6f7f9; height: 10px; margin: 0; }
 QScrollBar::handle:horizontal { background: #c9ced6; min-width: 32px; }
 QScrollBar::handle:horizontal:hover { background: #9aa4b0; }
 QScrollBar::handle:horizontal:pressed { background: #7a8694; }

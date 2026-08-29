@@ -225,6 +225,16 @@ else()
     )
 endif()
 
+# ---- SslProbe -------------------------------------------------------------
+# Dev probe: reports whether QtNetwork can load OpenSSL at runtime and make
+# an HTTPS request (update-check dependency; portable builds must ship the
+# 1_1-x64 DLLs next to the exe).
+add_executable(SslProbe Tools/SslProbe.cpp)
+target_link_libraries(SslProbe PRIVATE Qt5::Core Qt5::Network)
+if(WIN32)
+    target_compile_options(SslProbe PRIVATE /utf-8)
+endif()
+
 # ---- SpanProbe ------------------------------------------------------------
 # Dev probe: per-file footer statistics vs actual first/last rows for one
 # measurement (multi-file concat-order diagnostics). Not shipped.

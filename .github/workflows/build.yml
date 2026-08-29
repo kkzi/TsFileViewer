@@ -47,6 +47,14 @@ jobs:
           Copy-Item Build/Release/bin/TsFileViewer.exe artifact/
           # Qt runtime for a portable exe
           windeployqt --release --no-translations --no-opengl-sw artifact/TsFileViewer.exe
+          # OpenSSL 1.1.1 x64 for QtNetwork HTTPS (update check). Qt 5.15
+          # loads it at runtime and does not ship it (licensing); Git for
+          # Windows 2.36.1 (pre-OpenSSL-3 era) is the official binary source.
+          # Fixed URL, pinned release asset.
+          curl.exe -sSL -o mingit.zip https://github.com/git-for-windows/git/releases/download/v2.36.1.windows.1/MinGit-2.36.1-64-bit.zip
+          Expand-Archive mingit.zip mingit
+          Copy-Item mingit/mingw64/bin/libssl-1_1-x64.dll artifact/
+          Copy-Item mingit/mingw64/bin/libcrypto-1_1-x64.dll artifact/
           Compress-Archive -Path artifact/* -DestinationPath TsFileViewer-${{ github.ref_name }}-win64.zip
 
       - name: Upload build artifact

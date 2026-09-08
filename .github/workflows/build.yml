@@ -102,6 +102,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libgl1-mesa-dev
 
+      - name: Probe available Qt archs (debug)
+        run: |
+          python3 -m pip install -q aqtinstall==3.3.*
+          host=$(case "${{ runner.os }}" in Linux) echo linux;; macOS) echo mac;; Windows) echo windows;; esac)
+          python3 -m aqt list-qt $host desktop --arch 6.8.2
+          python3 -m aqt list-qt $host desktop --modules 6.8.2 ${{ matrix.arch }} || true
+
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4
         with:

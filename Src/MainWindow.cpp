@@ -11,6 +11,7 @@
 #include <QClipboard>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QDir>
 #include <QEvent>
 #include <QKeyEvent>
@@ -33,6 +34,7 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
 #include <QTreeView>
@@ -83,13 +85,47 @@ QString formatFullTimeUs(qint64 ts)
 }
 
 // Sample rate for the values-bar stats; kHz above 10 kHz for readability.
+// Rounded UP to the displayed precision: a nominally 100 Hz signal
+// measures slightly below (e.g. 99.8), and the mean rate must still
+// report the nominal 100.
 QString formatRate(double hz)
 {
     if (hz >= 10000.0)
     {
-        return QString::number(hz / 1000.0, 'f', 1) + QStringLiteral(" kHz");
+        return QString::number(std::ceil(hz / 100.0) / 10.0, 'f', 1) +
+               QStringLiteral(" kHz");
     }
-    return QString::number(hz, 'f', 1) + QStringLiteral(" Hz");
+    return QString::number(std::ceil(hz)) + QStringLiteral(" Hz");
+}
+
+// Left-tree group-row tooltip: the file info behind a device/table group
+// (files, rows, coverage), built from the footer statistics gathered at
+// open. Mirrors TsFile Viewer's file-info view (files, counts, time range).
+QString deviceToolTipText(const DeviceFileInfo& d)
+{
+    static const QLocale loc(QLocale::English, QLocale::UnitedStates);
+    QStringList lines;
+    lines << QStringLiteral("Files: %1").arg(d.files.size());
+    constexpr int kMaxListed = 8;
+    for (int i = 0; i < d.files.size() && i < kMaxListed; ++i)
+    {
+        lines << QDir::toNativeSeparators(d.files.at(i));
+    }
+    if (d.files.size() > kMaxListed)
+    {
+        lines << QStringLiteral("... and %1 more")
+                     .arg(d.files.size() - kMaxListed);
+    }
+    if (d.totalRows > 0)
+    {
+        lines << QStringLiteral("Rows: %1").arg(loc.toString(d.totalRows));
+    }
+    if (d.haveRange)
+    {
+        lines << QStringLiteral("Range: %1 .. %2")
+                     .arg(formatFullTimeUs(d.firstTs), formatFullTimeUs(d.lastTs));
+    }
+    return lines.join(QLatin1Char('\n'));
 }
 
 // Keep the sample at t (seconds) inside the 10%..90% band of the plot's x
@@ -180,12 +216,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     connect(doc_, &TsFileDocument::opened, this,
             [this](const MetaInfo& meta, const QVector<ParamInfo>& params)
     {
-        treeModel_->load(params);
-        proxy_->setFilter(QString());
+        {
+            QHash<QString, QString> tips;
+            for (auto it = meta.deviceInfo.cbegin();
+                 it != meta.deviceInfo.cend(); ++it)
+            {
+                tips.insert(it.key(), deviceToolTipText(it.value()));
+            }
+            treeModel_->load(params, tips);
+        }
         paramTree_->expandAll();
-        // load() clears the model, which resets the header columns to default
-        // widths; re-apply the Parameter column default after each load.
-        paramTree_->header()->resizeSection(0, 220);
+        applyTreeHeader();
         updateMetaBar(meta);
         clearContent();
         busy_->hide();
@@ -203,6 +244,21 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
                 tr("Loaded %1 files (%2)").arg(meta.fileCount).arg(parts.join(QStringLiteral(", "))),
                 8000);
         }
+        // Name the bad file(s) so the user knows what to kick out of the
+        // set (footer statistics only; suspects are heuristic).
+        if (!meta.corruptFiles.isEmpty() || !meta.suspectFiles.isEmpty())
+        {
+            QStringList bad;
+            for (const QString& f : meta.corruptFiles)
+            {
+                bad << tr("corrupt: %1").arg(QFileInfo(f).fileName());
+            }
+            for (const QString& f : meta.suspectFiles)
+            {
+                bad << tr("suspect: %1").arg(QFileInfo(f).fileName());
+            }
+            statusBar()->showMessage(bad.join(QStringLiteral("; ")), 12000);
+        }
         else if (meta.repaired)
         {
             statusBar()->showMessage(
@@ -214,6 +270,49 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         else
         {
             statusBar()->showMessage(tr("Loaded %1").arg(meta.path), 5000);
+        }
+    });
+    connect(doc_, &TsFileDocument::repairFinished, this,
+            [this](const QString& path, bool ok, const QString& message)
+    {
+        if (activeRepairs_ > 0)
+        {
+            --activeRepairs_;
+        }
+        if (!ok)
+        {
+            QMessageBox::warning(
+                this, tr("Repair failed"),
+                tr("%1:\n%2").arg(QDir::toNativeSeparators(path), message));
+            return;
+        }
+        repairsSucceeded_ = true;
+        statusBar()->showMessage(
+            tr("Repaired %1 (%2)").arg(QFileInfo(path).fileName(), message),
+            8000);
+        // Once the whole batch finished, ask before reloading — the user
+        // may be mid-analysis; repair-all queues several files and a
+        // mid-batch reload would show partial state anyway.
+        if (activeRepairs_ == 0)
+        {
+            repairsSucceeded_ = false;
+            if (QMessageBox::question(
+                    this, tr("Reload files"),
+                    tr("Repair finished. Reload the file set now?")) !=
+                QMessageBox::Yes)
+            {
+                return;
+            }
+            QStringList paths;
+            for (const FileInfoEntry& fe : lastMeta_.fileEntries)
+            {
+                paths << fe.path;
+            }
+            paths << lastMeta_.skippedFiles;
+            if (!paths.isEmpty())
+            {
+                openFiles(paths);
+            }
         }
     });
     connect(doc_, &TsFileDocument::openFailed, this, [this](const QString& error)
@@ -344,12 +443,11 @@ void MainWindow::setupUi()
     // Deterministic height for the header-alignment math below.
     searchEdit_->setFixedHeight(25);
     treeModel_ = new ParamTreeModel(this);
-    proxy_ = new ParamProxyModel(this);
-    proxy_->setSourceModel(treeModel_);
     paramTree_ = new QTreeView(left);
-    paramTree_->setModel(proxy_);
+    paramTree_->setModel(treeModel_);
     paramTree_->setSortingEnabled(false);
     paramTree_->setUniformRowHeights(true);
+    applyTreeHeader();
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(4, 4, 4, 4);
     leftLayout->setSpacing(4);
@@ -512,9 +610,10 @@ void MainWindow::setupUi()
     central->setChildrenCollapsible(false);
     setCentralWidget(central);
 
-    // Debounced filtering: the recursive tree filter walks every node, so
-    // per-keystroke filtering stutters on large schemas. Apply after typing
-    // pauses instead; Enter applies immediately.
+    // Debounced filtering: each apply rebuilds the visible tree from the
+    // master params, so per-keystroke application can stutter on large
+    // schemas. Apply after typing pauses instead; Enter applies
+    // immediately.
     searchTimer_ = new QTimer(this);
     searchTimer_->setSingleShot(true);
     searchTimer_->setInterval(300);
@@ -690,11 +789,7 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
             auto* me = static_cast<QMouseEvent*>(event);
             if (me->button() == Qt::LeftButton)
             {
-                const QDir dir = QFileInfo(currentPath_).absoluteDir();
-                if (dir.exists())
-                {
-                    QDesktopServices::openUrl(QUrl::fromLocalFile(dir.absolutePath()));
-                }
+                showFilesDialog();
                 return true;
             }
             if (me->button() == Qt::RightButton)
@@ -712,6 +807,8 @@ void MainWindow::openFile(const QString& path)
 {
     clearContent();
     treeModel_->load({});
+    applyTreeHeader();  // the clear/rebuild drops per-section modes
+    lastMeta_ = MetaInfo();
     currentPath_ = path;
     fileLabel_->setText(tr("File: %1").arg(QDir::toNativeSeparators(path)));
     devicesLabel_->setText(tr("Devices: -"));
@@ -727,6 +824,8 @@ void MainWindow::openFiles(const QStringList& paths)
 {
     clearContent();
     treeModel_->load({});
+    applyTreeHeader();  // the clear/rebuild drops per-section modes
+    lastMeta_ = MetaInfo();
     // Keep a representative path so the next Open dialog starts in the same
     // folder (labels show the count, not this path).
     currentPath_ = paths.first();
@@ -743,6 +842,7 @@ void MainWindow::openFiles(const QStringList& paths)
 
 void MainWindow::updateMetaBar(const MetaInfo& meta)
 {
+    lastMeta_ = meta;
     // Multi-file: keep the existing currentPath_ (a representative file);
     // clearing it would send the next Open dialog to the desktop.
     fileLabel_->setText(
@@ -778,7 +878,28 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
         if (meta.skippedFileCount > 0)
         {
             tip << tr("Skipped files could not be opened (corrupted tail?):");
-            for (const QString& f : meta.skippedFiles)
+            for (int i = 0; i < meta.skippedFiles.size(); ++i)
+            {
+                tip << QStringLiteral("  ") +
+                           QDir::toNativeSeparators(meta.skippedFiles.at(i)) +
+                           (i < meta.skippedErrors.size()
+                                ? QStringLiteral(" — ") +
+                                      meta.skippedErrors.at(i)
+                                : QString());
+            }
+        }
+        if (!meta.corruptFiles.isEmpty())
+        {
+            tip << tr("Corrupt files (footer statistics contradict themselves):");
+            for (const QString& f : meta.corruptFiles)
+            {
+                tip << QStringLiteral("  ") + QDir::toNativeSeparators(f);
+            }
+        }
+        if (!meta.suspectFiles.isEmpty())
+        {
+            tip << tr("Suspect files (statistics contradict the majority of files — heuristic):");
+            for (const QString& f : meta.suspectFiles)
             {
                 tip << QStringLiteral("  ") + QDir::toNativeSeparators(f);
             }
@@ -808,9 +929,286 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
                   "files; their concatenated values are not globally "
                   "time-sorted").arg(meta.overlappingParamCount);
     }
-    tip << tr("Left-click: open containing folder");
+    tip << tr("Left-click: file details");
     tip << tr("Right-click: copy path");
     fileLabel_->setToolTip(tip.join(QLatin1Char('\n')));
+}
+
+void MainWindow::showFilesDialog()
+{
+    const auto dash = [](qint64 v)
+    { return v < 0 ? QStringLiteral("-") : QString::number(v); };
+    // Distinct codec names of one file: "TS_2DIFF, PLAIN" style.
+    const auto codecNames = [](const QVector<int>& vals)
+    {
+        QStringList names;
+        for (int v : vals)
+        {
+            names << TsFileNames::encoding(v);
+        }
+        return names.isEmpty() ? QStringLiteral("-")
+                                : names.join(QStringLiteral(", "));
+    };
+    const auto compNames = [](const QVector<int>& vals)
+    {
+        QStringList names;
+        for (int v : vals)
+        {
+            names << TsFileNames::compression(v);
+        }
+        return names.isEmpty() ? QStringLiteral("-")
+                                : names.join(QStringLiteral(", "));
+    };
+
+    // Row data for the damaged table (declared before the dialog so the
+    // connect-lambdas below can never outlive it).
+    QStringList badPaths;    // parallel to badTable rows
+    QVector<bool> badSkipped;  // true = unreadable (repair candidate)
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Loaded Files"));
+    auto* lay = new QVBoxLayout(&dlg);
+
+    // ---- normal (loaded, clean) files --------------------------------
+    auto* tableLabel = new QLabel(tr("Loaded files"), &dlg);
+    QFont boldFont = tableLabel->font();
+    boldFont.setBold(true);
+    tableLabel->setFont(boldFont);
+    auto* table = new QTableWidget(&dlg);
+    table->setColumnCount(11);
+    table->setHorizontalHeaderLabels(
+        {tr("No."), tr("Name"), tr("Size"), tr("Devices"), tr("Tables"),
+         tr("Params"), tr("Chunks"), tr("Rows"), tr("Time Range"),
+         tr("Encoding"), tr("Compression")});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->setAlternatingRowColors(true);
+    table->verticalHeader()->setVisible(false);
+    auto addRow = [&](int row, const QString& path, const QString& name,
+                      const QStringList& cells)
+    {
+        QStringList all;
+        all << QString::number(row + 1) << name << cells;
+        for (int c = 0; c < all.size(); ++c)
+        {
+            auto* it = new QTableWidgetItem(all.at(c));
+            it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+            if (c == 1)
+            {
+                it->setToolTip(QDir::toNativeSeparators(path));
+            }
+            else
+            {
+                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            }
+            table->setItem(row, c, it);
+        }
+    };
+
+    // ---- damaged / unreadable files ----------------------------------
+    auto* badLabel = new QLabel(tr("Damaged / unreadable files"), &dlg);
+    badLabel->setFont(boldFont);
+    auto* badTable = new QTableWidget(&dlg);
+    badTable->setColumnCount(4);
+    badTable->setHorizontalHeaderLabels(
+        {tr("No."), tr("Name"), tr("Size"), tr("Status")});
+    badTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    badTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    badTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    badTable->setAlternatingRowColors(true);
+    badTable->verticalHeader()->setVisible(false);
+    // Red = damaged, mirroring the red tree labels.
+    const QColor bad(0xd9, 0x30, 0x30);
+    auto addBadRow = [&](const QString& path, qint64 size,
+                         const QString& status, bool skipped)
+    {
+        const int row = badPaths.size();
+        badPaths << path;
+        badSkipped << skipped;
+        badTable->setRowCount(row + 1);
+        auto* num = new QTableWidgetItem(QString::number(row + 1));
+        num->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto* name = new QTableWidgetItem(QFileInfo(path).fileName());
+        name->setToolTip(QDir::toNativeSeparators(path));
+        auto* sz = new QTableWidgetItem(humanSize(size));
+        sz->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto* st = new QTableWidgetItem(status);
+        QTableWidgetItem* cells[] = {num, name, sz, st};
+        for (int c = 0; c < 4; ++c)
+        {
+            cells[c]->setFlags(cells[c]->flags() & ~Qt::ItemIsEditable);
+            cells[c]->setForeground(QBrush(bad));
+            badTable->setItem(row, c, cells[c]);
+        }
+    };
+    auto setBadStatus = [&](const QString& path, const QString& text)
+    {
+        const int i = badPaths.indexOf(path);
+        if (i >= 0 && badTable->item(i, 3) != nullptr)
+        {
+            badTable->item(i, 3)->setText(text);
+        }
+    };
+
+    // ---- fill / refresh both tables from lastMeta_ --------------------
+    auto fill = [&]()
+    {
+        table->setRowCount(0);
+        int row = 0;
+        for (const FileInfoEntry& fe : lastMeta_.fileEntries)
+        {
+            if (lastMeta_.corruptFiles.contains(fe.path) ||
+                lastMeta_.suspectFiles.contains(fe.path))
+            {
+                continue;  // damaged files live in the lower table
+            }
+            table->setRowCount(row + 1);
+            addRow(row++, fe.path, QFileInfo(fe.path).fileName(),
+                   {humanSize(fe.size), QString::number(fe.deviceCount),
+                    QString::number(fe.tableCount),
+                    QString::number(fe.paramCount), dash(fe.chunkCount),
+                    dash(fe.rowCount),
+                    fe.haveRange
+                        ? QStringLiteral("%1 .. %2")
+                              .arg(formatFullTimeUs(fe.firstTs),
+                                   formatFullTimeUs(fe.lastTs))
+                        : QStringLiteral("-"),
+                    codecNames(fe.encodings), compNames(fe.compressions)});
+        }
+        badPaths.clear();
+        badSkipped.clear();
+        badTable->setRowCount(0);
+        for (const FileInfoEntry& fe : lastMeta_.fileEntries)
+        {
+            if (lastMeta_.corruptFiles.contains(fe.path))
+            {
+                addBadRow(fe.path, fe.size,
+                          QStringLiteral(
+                              "corrupt: footer statistics self-contradictory"),
+                          false);
+            }
+            else if (lastMeta_.suspectFiles.contains(fe.path))
+            {
+                addBadRow(fe.path, fe.size,
+                          QStringLiteral("suspect: statistics contradict the "
+                                          "majority (heuristic)"),
+                          false);
+            }
+        }
+        for (int i = 0; i < lastMeta_.skippedFiles.size(); ++i)
+        {
+            const QString& p = lastMeta_.skippedFiles.at(i);
+            addBadRow(
+                p, QFileInfo(p).size(),
+                i < lastMeta_.skippedErrors.size()
+                    ? lastMeta_.skippedErrors.at(i)
+                    : QString(),
+                true);
+        }
+        badTable->resizeColumnsToContents();
+        badTable->horizontalHeader()->setStretchLastSection(true);
+        const bool any = !badPaths.isEmpty();
+        badLabel->setVisible(any);
+        badTable->setVisible(any);
+        badTable->setMaximumHeight(
+            any ? qMin(220, 50 + badPaths.size() * 28) : 0);
+    };
+    fill();
+
+    // ---- repair dispatch ---------------------------------------------
+    const auto dispatchRepair = [&](const QStringList& paths)
+    {
+        for (const QString& p : paths)
+        {
+            setBadStatus(p, tr("Repairing…"));
+            ++activeRepairs_;
+            doc_->repairFileAsync(p);
+        }
+    };
+
+    // Right-click the damaged table: repair the clicked unreadable file or
+    // all of them (truncate the damaged tail and seal, same as the
+    // single-file repair flow). Statistics-level corrupt/suspect files are
+    // openable — truncation is not their remedy, so no repair for them.
+    badTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(badTable, &QTableWidget::customContextMenuRequested, &dlg,
+            [this, badTable, &badPaths, &badSkipped, &dispatchRepair](
+                const QPoint& pos)
+    {
+        const int row = badTable->rowAt(pos.y());
+        QStringList repairable;
+        for (int i = 0; i < badPaths.size(); ++i)
+        {
+            if (badSkipped.at(i))
+            {
+                repairable << badPaths.at(i);
+            }
+        }
+        QMenu menu(badTable);
+        QAction* one = nullptr;
+        if (row >= 0 && row < badPaths.size() && badSkipped.at(row))
+        {
+            one = menu.addAction(tr("Repair (truncate damaged tail)…"));
+        }
+        QAction* all = repairable.size() > 1
+                           ? menu.addAction(tr("Repair all %1 unreadable file(s)…")
+                                                .arg(repairable.size()))
+                           : nullptr;
+        if (one == nullptr && all == nullptr)
+        {
+            return;
+        }
+        QAction* chosen = menu.exec(badTable->viewport()->mapToGlobal(pos));
+        QStringList targets;
+        if (chosen == one && one != nullptr)
+        {
+            targets << badPaths.at(row);
+        }
+        else if (chosen == all && all != nullptr)
+        {
+            targets = repairable;
+        }
+        else
+        {
+            return;
+        }
+        if (QMessageBox::question(
+                badTable, tr("Repair files"),
+                tr("Truncate the damaged tail of %1 file(s) and seal them in "
+                   "place?\nThe files will be modified, then the whole set "
+                   "is reloaded.")
+                    .arg(targets.size())) != QMessageBox::Yes)
+        {
+            return;
+        }
+        dispatchRepair(targets);
+    });
+
+    // ---- live updates while the dialog is open ------------------------
+    // Repair outcome lands in the Status column; on user-confirmed reload
+    // `opened` refills both tables — a repaired file then appears as a
+    // normal row.
+    connect(doc_, &TsFileDocument::repairFinished, &dlg,
+            [&setBadStatus](const QString& path, bool ok, const QString& message)
+    {
+        setBadStatus(path,
+                     ok ? QObject::tr("repaired — reload to apply")
+                        : QObject::tr("repair failed: %1").arg(message));
+    });
+    connect(doc_, &TsFileDocument::opened, &dlg, [&]() { fill(); });
+
+    table->resizeColumnsToContents();
+    table->horizontalHeader()->setStretchLastSection(true);
+    lay->addWidget(tableLabel);
+    lay->addWidget(table, 1);
+    lay->addWidget(badLabel);
+    lay->addWidget(badTable);
+    const int w = qMin(1400, table->horizontalHeader()->length() + 70);
+    const int h = qMin(640, 80 + table->horizontalHeader()->height() +
+                                 table->rowCount() * 30);
+    dlg.resize(w, h);
+    dlg.exec();
 }
 
 void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
@@ -826,6 +1224,10 @@ void MainWindow::onValuesChunk(const SeriesData& chunk, bool done)
     valueModel_->appendChunk(chunk);
     appendPlotData(chunk, fresh);
     const SeriesData* series = valueModel_->series();
+    // TEXT and other non-numeric series have no curve to draw: hide the
+    // plot pane entirely (empty axes behind the table would read as broken
+    // rendering). The table and CSV export still carry the data.
+    plot_->setVisible(series == nullptr || series->numeric);
     if (!done)
     {
         // Progressive load: running row count in the status bar. The total
@@ -873,9 +1275,9 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
     // (the loading overlay blocked interaction, so no user zoom is lost).
     fitOnNextRebuild_ = true;
     rebuildPlot();
-    // Large series: build the decimated overview once, then let the current
-    // view decide raw vs envelope.
-    if (series.ts.size() > kRawVisibleLimit)
+    // Large numeric series: build the decimated overview once, then let the
+    // current view decide raw vs envelope.
+    if (series.numeric && series.ts.size() > kRawVisibleLimit)
     {
         envelopeData_ = buildEnvelope();
         updateGraphData();
@@ -1015,7 +1417,7 @@ void MainWindow::rebuildPlot()
     const SeriesData* series = valueModel_->series();
     plot_->clearPlottables();
     plotGraph_ = nullptr;
-    if (series != nullptr && !series->ts.isEmpty())
+    if (series != nullptr && !series->ts.isEmpty() && series->numeric)
     {
         auto* graph = plot_->addGraph();
         // X axis in seconds (ts / 1e6, same base as the Time column). Raw
@@ -1098,15 +1500,12 @@ void MainWindow::applyScatterSize(QCPGraph* graph)
     const qint64 visible =
         countInRange(plotData_.data(), range.lower, range.upper);
     const bool showMarkers = visible <= kScatterVisibleLimit;
-    // 6px red dot, no outline: the curve is only 1px and draws under the
-    // markers, so a white halo would erase the line between nearby samples
-    // (invisible on the white plot background). Plain red reads against
-    // both the black curve and the background.
+    // 4px red dot, no outline.
     graph->setScatterStyle(showMarkers
                                ? QCPScatterStyle(QCPScatterStyle::ssCircle,
-                                                 Qt::NoPen,
+                                                 QPen(Qt::NoPen),
                                                  QBrush(QColor(Qt::red)),
-                                                 6)
+                                                 4)
                                : QCPScatterStyle(QCPScatterStyle::ssNone));
     // Black curve on white; matches the monochrome theme.
     graph->setPen(QPen(QColor(0x1f, 0x23, 0x28), 1));
@@ -1405,8 +1804,8 @@ void MainWindow::updateTracer(int row)
         return;
     }
     const SeriesData* series = valueModel_->series();
-    const bool valid =
-        series != nullptr && row >= 0 && row < series->ts.size();
+    const bool valid = plotGraph_ != nullptr && series != nullptr &&
+                       row >= 0 && row < series->ts.size();
     tracer_->setVisible(valid);
     if (tracerInfo_ != nullptr)
     {
@@ -1713,25 +2112,38 @@ void MainWindow::clearContent()
 {
     valueModel_->setSeries(SeriesData{});
     clearPlot();
+    plot_->setVisible(true);  // a TEXT series hides it; restore on clear
     paramNameLabel_->setText(QString());
     paramStatLabel_->setText(QString());
     paramStatLabel_->setToolTip(QString());
+    codecLabel_->setVisible(true);
+    codecLabel_->setText(tr("Codec: -"));
     analysisLabel_->setText(QString());
     plot_->setToolTip(QString());
     exportBtn_->setEnabled(false);
     resetStats();
 }
 
+void MainWindow::applyTreeHeader()
+{
+    // Parameter names take all remaining width (a fixed width truncates
+    // them); the short Type labels fit their content.
+    paramTree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    paramTree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    paramTree_->header()->setStretchLastSection(false);
+}
+
 void MainWindow::applySearch(const QString& text)
 {
-    proxy_->setFilter(text);
-    // Filtering collapses device nodes when their children are removed
-    // and re-added; re-expand so matched leaves stay visible. Also
-    // auto-select the first match for quick Enter-loading.
+    treeModel_->setFilter(text);
+    // The rebuild starts devices collapsed; re-expand so matched leaves
+    // stay visible. Also auto-select the first match for quick
+    // Enter-loading.
     paramTree_->expandAll();
+    applyTreeHeader();
     if (!text.isEmpty())
     {
-        const QModelIndex first = proxy_->index(0, 0);
+        const QModelIndex first = treeModel_->index(0, 0);
         if (first.isValid())
         {
             paramTree_->setCurrentIndex(first);
@@ -1754,7 +2166,7 @@ void MainWindow::onParamActivated()
     {
         return;
     }
-    const QModelIndex sourceIndex = proxy_->mapToSource(proxyIndex);
+    const QModelIndex sourceIndex = proxyIndex;  // no proxy since the tree filters itself
     if (!ParamTreeModel::isMeasurementRow(sourceIndex))
     {
         statusBar()->showMessage(
@@ -1780,6 +2192,10 @@ void MainWindow::onParamActivated()
     // Stats from the previous series are stale until the query completes.
     paramStatLabel_->setText(QString());
     paramStatLabel_->setToolTip(QString());
+    // Multi-file: one param spans several files whose codecs may differ,
+    // so no single toolbar value is honest — the files dialog lists the
+    // per-file codecs instead.
+    codecLabel_->setVisible(lastMeta_.fileCount <= 1);
     codecLabel_->setText(tr("Codec: %1 / %2")
                              .arg(TsFileNames::encoding(param.encoding),
                                   TsFileNames::compression(param.compression)));

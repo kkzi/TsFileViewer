@@ -20,7 +20,6 @@ class QTableView;
 class QTimer;
 class QTreeView;
 
-class ParamProxyModel;
 class ParamTreeModel;
 class ValueTableModel;
 class LoadingOverlay;
@@ -120,6 +119,12 @@ private:
     // selectionChanged); Left/Right step the selected sample (table row
     // follows, plot pans to keep the point in the 10%..90% band).
     void stepSelection(int key);
+    // Parameter column stretches, Type column fits its content. Re-applied
+    // after every model rebuild: clear() drops per-section resize modes.
+    void applyTreeHeader();
+    // Toolbar file label left-click: dialog listing the loaded files with
+    // per-file footer statistics (name, size, devices, params, chunks...).
+    void showFilesDialog();
 
     // widgets
     QLineEdit* searchEdit_ = nullptr;
@@ -138,6 +143,10 @@ private:
     QLabel* devicesLabel_ = nullptr;
     QLabel* paramsLabel_ = nullptr;
     QLabel* rangeLabel_ = nullptr;
+
+    MetaInfo lastMeta_;  // last successful open (file dialog data source)
+    int activeRepairs_ = 0;       // queued file repairs (reload when 0)
+    bool repairsSucceeded_ = false;  // any repair in the batch worked
     QLabel* analysisLabel_ = nullptr;  // status bar: per-parameter analysis
     QLabel* versionLabel_ = nullptr;   // status bar: v0.1.0 (clickable on update)
     QString latestVersion_;            // newest tag from GitHub ("" unknown)
@@ -151,7 +160,6 @@ private:
     // models / data
     TsFileDocument* doc_ = nullptr;
     ParamTreeModel* treeModel_ = nullptr;
-    ParamProxyModel* proxy_ = nullptr;
     ValueTableModel* valueModel_ = nullptr;
     ParamInfo currentParam_;
     // Current file's original path (label shows native separators).

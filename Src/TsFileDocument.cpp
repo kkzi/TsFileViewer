@@ -24,10 +24,12 @@
 #include <QDir>
 #include <QSet>
 #include <QMetaObject>
+#include <QtConcurrent>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <optional>
 
@@ -104,6 +106,31 @@ bool fieldToValues(const storage::Field* f, double& v, QString& text)
     return true;
 }
 }  // namespace
+
+// Human-readable reason a file was skipped (mapped from the reader's
+// open error code; enriched with what the filesystem says).
+QString skipReason(const QString& path, int code)
+{
+    if (code == common::E_FILE_OPEN_ERR)
+    {
+        return QFileInfo::exists(path)
+                   ? QStringLiteral(
+                         "open failed (locked by writer or no read permission)")
+                   : QStringLiteral("file not found");
+    }
+    if (code == common::E_FILE_STAT_ERR)
+    {
+        return QStringLiteral("stat failed");
+    }
+    if (code == common::E_TSFILE_CORRUPTED)
+    {
+        return QStringLiteral(
+                   "corrupted: bad magic or size too small (%1 bytes) — "
+                   "damaged tail or not a tsfile")
+            .arg(QFileInfo(path).size());
+    }
+    return QStringLiteral("open failed (code %1)").arg(code);
+}
 
 // Helpers shared with the model layer (Models.cpp uses the tree tooltips).
 namespace TsFileNames
@@ -216,6 +243,7 @@ public slots:
 
         // ---- tree part: devices > measurements ----------------------------
         auto devices = reader.get_all_device_ids();
+        QSet<int> encSet, compSet;  // distinct codecs (files dialog)
         for (const auto& device : devices)
         {
             const QString deviceName =
@@ -232,6 +260,8 @@ public slots:
                 p.dataType = static_cast<int>(s.data_type_);
                 p.encoding = static_cast<int>(s.encoding_);
                 p.compression = static_cast<int>(s.compression_type_);
+                encSet.insert(p.encoding);
+                compSet.insert(p.compression);
                 params.push_back(p);
             }
         }
@@ -265,6 +295,12 @@ public slots:
             }
         }
         meta.tableCount = static_cast<int>(meta.tables.size());
+        // Single-file mode has no footer-statistics walk, so the per-device
+        // tooltip carries just the file path.
+        for (const QString& d : meta.devices + meta.tables)
+        {
+            meta.deviceInfo[d].files << path;
+        }
         reader.close();
 
         if (meta.deviceCount == 0 && meta.tableCount == 0)
@@ -276,6 +312,19 @@ public slots:
         meta.paramCount = static_cast<int>(params.size());
         const QFileInfo fi(path);
         meta.fileSize = fi.size();
+        // Single-file mode skips the full metadata walk, so chunk/row
+        // counts stay unknown (-1); the dialog shows "-".
+        FileInfoEntry fe;
+        fe.path = path;
+        fe.size = meta.fileSize;
+        fe.deviceCount = meta.deviceCount;
+        fe.tableCount = meta.tableCount;
+        fe.paramCount = meta.paramCount;
+        fe.encodings = encSet.values().toVector();
+        std::sort(fe.encodings.begin(), fe.encodings.end());
+        fe.compressions = compSet.values().toVector();
+        std::sort(fe.compressions.begin(), fe.compressions.end());
+        meta.fileEntries.append(fe);
         meta.repaired = recovered;
         meta.truncatedBytes = truncatedBytes;
         // A repaired file lost its corrupted tail (crashed write): the tree
@@ -299,6 +348,7 @@ public slots:
     {
         files_.clear();
         routes_.clear();
+        fileEntries_.clear();
         path_.clear();
 
         if (paths.isEmpty())
@@ -315,13 +365,16 @@ public slots:
 
         int skipped = 0;
         QStringList skippedFiles;
+        QStringList skippedErrors;
         QStringList loadedFiles;
         for (const QString& path : paths)
         {
-            if (!appendFileToRoutes(path, loadedFiles.size()))
+            int openError = 0;
+            if (!appendFileToRoutes(path, loadedFiles.size(), &openError))
             {
                 ++skipped;
                 skippedFiles << path;
+                skippedErrors << skipReason(path, openError);
                 continue;
             }
             loadedFiles << path;
@@ -333,6 +386,118 @@ public slots:
             emit openFailed(QStringLiteral("none of the %1 file(s) could be opened")
                                 .arg(paths.size()));
             return;
+        }
+
+        // Per-device file info for the tree tooltips: aggregated footer
+        // statistics (rows, coverage) and the contributing files. Built
+        // before the single-file degrade clears routes_ below.
+        {
+            QHash<QString, QSet<int>> deviceFiles;
+            for (auto it = routes_.cbegin(); it != routes_.cend(); ++it)
+            {
+                const int sep = it.key().indexOf(QLatin1Char('\x01'));
+                const QString dev = it.key().left(sep);
+                const ParamRoute& r = it.value();
+                DeviceFileInfo& d = meta.deviceInfo[dev];
+                d.totalRows += r.totalRows;
+                for (auto fit = r.perFile.cbegin(); fit != r.perFile.cend(); ++fit)
+                {
+                    deviceFiles[dev].insert(fit.key());
+                    const ParamSlice& s = fit.value();
+                    if (s.count > 0)
+                    {
+                        if (!d.haveRange)
+                        {
+                            d.firstTs = s.startTs;
+                            d.lastTs = s.endTs;
+                            d.haveRange = true;
+                        }
+                        else
+                        {
+                            d.firstTs = std::min(d.firstTs, s.startTs);
+                            d.lastTs = std::max(d.lastTs, s.endTs);
+                        }
+                    }
+                }
+            }
+            for (auto it = deviceFiles.cbegin(); it != deviceFiles.cend(); ++it)
+            {
+                QList<int> idx = it.value().values();
+                std::sort(idx.begin(), idx.end());
+                DeviceFileInfo& d = meta.deviceInfo[it.key()];
+                for (int i : idx)
+                {
+                    d.files << files_.at(i);
+                }
+            }
+        }
+
+        // ---- corrupt-file identification (footer statistics only) --------
+        // 1) Proven: a param slice in that file contradicts itself
+        //    (negative count, or start > end).
+        // 2) Heuristic minority vote: for every param, each file taking part
+        //    in a time-range overlap (slices sorted by start, next starts
+        //    before the previous ends) collects a vote. A single lying file
+        //    accumulates votes from every param and both its neighbors;
+        //    clean files only from their side of the chain. Reported as
+        //    suspects, not facts.
+        {
+            QSet<int> corruptIdx;
+            QHash<int, qint64> votes;
+            for (auto it = routes_.cbegin(); it != routes_.cend(); ++it)
+            {
+                const ParamRoute& r = it.value();
+                for (auto fit = r.perFile.cbegin(); fit != r.perFile.cend(); ++fit)
+                {
+                    const ParamSlice& s = fit.value();
+                    if (s.count < 0 ||
+                        (s.count > 0 && s.startTs > s.endTs))
+                    {
+                        corruptIdx.insert(fit.key());
+                    }
+                }
+                QList<QPair<int, const ParamSlice*>> byStart;
+                for (auto fit = r.perFile.cbegin(); fit != r.perFile.cend(); ++fit)
+                {
+                    if (fit.value().count > 0)
+                    {
+                        byStart.append({fit.key(), &fit.value()});
+                    }
+                }
+                std::sort(byStart.begin(), byStart.end(),
+                          [](const QPair<int, const ParamSlice*>& a,
+                             const QPair<int, const ParamSlice*>& b)
+                          { return a.second->startTs < b.second->startTs; });
+                for (int i = 1; i < byStart.size(); ++i)
+                {
+                    if (byStart.at(i).second->startTs <=
+                        byStart.at(i - 1).second->endTs)
+                    {
+                        ++votes[byStart.at(i).first];
+                        ++votes[byStart.at(i - 1).first];
+                    }
+                }
+            }
+            for (int idx : qAsConst(corruptIdx))
+            {
+                meta.corruptFiles << files_.at(idx);
+            }
+            qint64 maxVotes = 0;
+            for (auto it = votes.cbegin(); it != votes.cend(); ++it)
+            {
+                maxVotes = qMax(maxVotes, it.value());
+            }
+            for (auto it = votes.cbegin(); it != votes.cend(); ++it)
+            {
+                if (it.value() == maxVotes && maxVotes > 0)
+                {
+                    const QString path = files_.at(it.key());
+                    if (!meta.corruptFiles.contains(path))
+                    {
+                        meta.suspectFiles << path;
+                    }
+                }
+            }
         }
         // Exactly one readable file: degrade to single-file mode so
         // query/export use the plain path_ code path.
@@ -457,26 +622,73 @@ public slots:
         meta.overlappingParamCount = overlapParamCount;
         overlappingParamCount_ = overlapParamCount;
         meta.skippedFiles = skippedFiles;
+        meta.skippedErrors = skippedErrors;
+        meta.fileEntries = fileEntries_;
 
         emit opened(meta, params);
     }
 
     // Read one file's footer and merge its schema/statistics into routes_.
-    // Returns false (and stays silent) when the file cannot be opened.
-    bool appendFileToRoutes(const QString& path, int fileIdx)
+    // Returns false (and stays silent) when the file cannot be opened;
+    // *openError then carries the reader's error code.
+    bool appendFileToRoutes(const QString& path, int fileIdx,
+                            int* openError = nullptr)
     {
         storage::TsFileReader reader;
-        if (reader.open(pathbridge::toLibPath(path).toStdString()) !=
-            common::E_OK)
+        const int r =
+            reader.open(pathbridge::toLibPath(path).toStdString());
+        if (r != common::E_OK)
         {
+            if (openError != nullptr)
+            {
+                *openError = r;
+            }
             return false;
         }
 
+        FileInfoEntry fe;
+        fe.path = path;
+        fe.size = QFileInfo(path).size();
+        fe.chunkCount = 0;
+        fe.rowCount = 0;
+        QSet<QString> devices;
+
         const auto meta = reader.get_timeseries_metadata();
+        // Encoding/compression truth lives in the chunk headers; the
+        // ChunkMeta fields from the metadata index are uninitialized.
+        // get_timeseries_schema (fork fix) reads them — one cached 256-byte
+        // header read per series, same walk single-file mode always does.
+        QHash<QString, QPair<int, int>> codecs;  // route key -> (enc, comp)
+        for (const auto& kv : meta)
+        {
+            std::vector<storage::MeasurementSchema> schemas;
+            reader.get_timeseries_schema(kv.first, schemas);
+            for (const auto& s : schemas)
+            {
+                codecs.insert(
+                    QString::fromStdString(kv.first->get_device_name()) +
+                        QLatin1Char('\x01') +
+                        QString::fromStdString(s.measurement_name_),
+                    {static_cast<int>(s.encoding_),
+                     static_cast<int>(s.compression_type_)});
+            }
+        }
+        // Distinct codecs used in this file (for the files dialog).
+        QSet<int> encSet, compSet;
+        for (const auto& c : codecs)
+        {
+            encSet.insert(c.first);
+            compSet.insert(c.second);
+        }
+        fe.encodings = encSet.values().toVector();
+        std::sort(fe.encodings.begin(), fe.encodings.end());
+        fe.compressions = compSet.values().toVector();
+        std::sort(fe.compressions.begin(), fe.compressions.end());
         for (const auto& kv : meta)
         {
             const QString device =
                 QString::fromStdString(kv.first->get_device_name());
+            devices.insert(device);
             for (const auto& tsip : kv.second)
             {
                 const QString measurement = QString::fromStdString(
@@ -486,6 +698,11 @@ public slots:
                 ParamSlice& s = r.perFile[fileIdx];
                 r.treeSource = true;
                 r.dataType = static_cast<int>(tsip->get_data_type());
+                if (const auto it = codecs.constFind(key); it != codecs.cend())
+                {
+                    r.encoding = it->first;
+                    r.compression = it->second;
+                }
                 if (const storage::Statistic* st =
                         tsip->get_statistic())  // aligned: value statistic
                 {
@@ -494,8 +711,33 @@ public slots:
                     s.endTs = st->get_end_time();
                 }
                 r.totalRows += s.count;
+                fe.paramCount++;
+                fe.rowCount += qMax<qint64>(s.count, 0);
+                if (s.count > 0)
+                {
+                    if (!fe.haveRange)
+                    {
+                        fe.firstTs = s.startTs;
+                        fe.lastTs = s.endTs;
+                        fe.haveRange = true;
+                    }
+                    else
+                    {
+                        fe.firstTs = qMin(fe.firstTs, s.startTs);
+                        fe.lastTs = qMax(fe.lastTs, s.endTs);
+                    }
+                }
+                // Aligned series keep the timestamps in the time chunk
+                // list; plain series in the single chunk list.
+                if (auto* list = tsip->is_aligned()
+                                     ? tsip->get_time_chunk_meta_list()
+                                     : tsip->get_chunk_meta_list())
+                {
+                    fe.chunkCount += list->size();
+                }
             }
         }
+        fe.deviceCount = devices.size();
 
         // Table model files: field columns become routable params too.
         const auto tableSchemas = reader.get_all_table_schemas();
@@ -522,10 +764,58 @@ public slots:
                 ParamSlice& s = r.perFile[fileIdx];
                 r.tableSource = true;
                 r.dataType = static_cast<int>(types[i]);
+                fe.paramCount++;
             }
+            fe.tableCount++;
         }
         reader.close();
+        fileEntries_.append(fe);
         return true;
+    }
+
+    // Repair an unopenable file in place: truncate the corrupted tail and
+    // seal it (footer rewrite), then verify the plain reader accepts it.
+    // Same sequence as the repair path in open(). Runs on a thread-pool
+    // thread (see TsFileDocument::repairFileAsync), NOT here: a long
+    // self-check scan must not block queries on this single thread.
+    static void repairFile(const QString& path,
+                           std::function<void(bool, QString)> done)
+    {
+        const std::string libPath = pathbridge::toLibPath(path).toStdString();
+        storage::RestorableTsFileIOWriter rw;
+        if (rw.open(libPath, /*truncate_corrupted=*/true) != common::E_OK)
+        {
+            done(false, QStringLiteral("not recoverable (open failed)"));
+            return;
+        }
+        const qint64 truncated = rw.get_truncated_size();
+        if (rw.can_write())
+        {
+            if (rw.end_file() != common::E_OK)
+            {
+                rw.close();
+                done(false,
+                     QStringLiteral(
+                         "repair sealing failed (file untouched beyond "
+                         "truncation)"));
+                return;
+            }
+            rw.close();
+        }
+        else
+        {
+            rw.close();
+        }
+        storage::TsFileReader reader;
+        if (reader.open(libPath) != common::E_OK)
+        {
+            done(false, QStringLiteral("still unopenable after repair"));
+            return;
+        }
+        reader.close();
+        done(true,
+             QStringLiteral("truncated %1 byte(s) of damaged tail")
+                 .arg(truncated));
     }
 
     void query(const ParamInfo& param)
@@ -945,6 +1235,7 @@ private:
     QString path_;                   // single-file mode: the file
     QStringList files_;              // directory mode: the loaded files
     QHash<QString, ParamRoute> routes_;  // key: "device\x01measurement"
+    QVector<FileInfoEntry> fileEntries_;  // per-file summary (dialog)
     qint64 overlappingParamCount_ = 0;  // params whose files overlap in time
     bool repairAllowed_ = false;  // set after the user confirms
     bool repairAsked_ = false;
@@ -1025,6 +1316,24 @@ void TsFileDocument::retryWithRepair(const QString& path, bool allow)
     {
         worker->repairAllowed_ = allow;
         worker->open(path);
+    });
+}
+
+void TsFileDocument::repairFileAsync(const QString& path)
+{
+    // Thread pool, not the doc worker: the self-check scan of a large file
+    // takes minutes and must not block value queries queued on the worker
+    // (same concurrency model as exportCsvBlocking).
+    (void)QtConcurrent::run([this, path]
+    {
+        Worker::repairFile(
+            path,
+            [this, path](bool ok, const QString& message)
+            {
+                // Emitted from the pool thread; slots run queued on the
+                // UI thread.
+                emit repairFinished(path, ok, message);
+            });
     });
 }
 

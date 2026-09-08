@@ -65,9 +65,19 @@ int main(int argc, char** argv)
 
     MainWindow window;
     window.show();
-    if (argc >= 2)
+    if (argc == 2)
     {
         window.openFile(QString::fromStdString(argv[1]));
+    }
+    else if (argc > 2)
+    {
+        // Several paths on the command line: multi-file aggregate mode.
+        QStringList paths;
+        for (int i = 1; i < argc; ++i)
+        {
+            paths << QString::fromStdString(argv[i]);
+        }
+        window.openFiles(paths);
     }
     return QApplication::exec();
 }

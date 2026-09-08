@@ -1,27 +1,9 @@
 #pragma once
 
-#include <QSortFilterProxyModel>
+#include <QHash>
 #include <QStandardItemModel>
 
 #include "TsFileDocument.h"
-
-// Proxy that keeps device rows when a child measurement matches the filter
-// (case-insensitive substring). Explicit recursion instead of Qt 5.10's
-// recursive filtering, keeps behavior obvious.
-class ParamProxyModel : public QSortFilterProxyModel
-{
-    Q_OBJECT
-public:
-    using QSortFilterProxyModel::QSortFilterProxyModel;
-
-    void setFilter(const QString& text);
-
-protected:
-    bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override;
-
-private:
-    QString filter_;
-};
 
 // Tree model: top-level rows = devices, children = measurements.
 class ParamTreeModel : public QStandardItemModel
@@ -37,9 +19,15 @@ public:
 
     explicit ParamTreeModel(QObject* parent = nullptr);
 
-    void load(const QVector<ParamInfo>& params);
-    // Measurement row for a param, or an invalid index.
-    QModelIndex indexOfParam(const ParamInfo& param) const;
+    void load(const QVector<ParamInfo>& params,
+              const QHash<QString, QString>& deviceTooltips = {});
+    // Case-insensitive substring filter on measurement names; a device
+    // group stays when its own name matches or any child does. Rebuilds
+    // the visible tree from params_ (O(matches)); params_ is the
+    // untouched master. Direct rebuild instead of a filter proxy: a proxy
+    // re-walks every one of the (up to ~100k) source rows on each filter
+    // change, which was the filter stutter.
+    void setFilter(const QString& text);
     ParamInfo paramAt(const QModelIndex& measurementIndex) const;
     // Data role carrying the index into params_ (avoids the O(n) ownership
     // walk of paramAt on every activation).
@@ -50,7 +38,13 @@ public:
     }
 
 private:
+    // Rebuild the visible rows from params_ under the current filter_.
+    void rebuildTree();
+
     QVector<ParamInfo> params_;
+    QString filter_;
+    // Per-device file info text for group-row tooltips (device -> text).
+    QHash<QString, QString> deviceTooltips_;
 };
 
 // Table model for the selected series: No | Time | Value.

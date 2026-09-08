@@ -61,146 +61,150 @@ QIcon leafIcon()
 const QColor kSuspiciousColor(0xd9, 0x30, 0x30);
 }  // namespace
 
-// ---- ParamProxyModel --------------------------------------------------------
-
-void ParamProxyModel::setFilter(const QString& text)
-{
-    filter_ = text;
-    invalidateFilter();
-}
-
-bool ParamProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const
-{
-    if (filter_.isEmpty())
-    {
-        return true;
-    }
-
-    const QModelIndex index = sourceModel()->index(sourceRow, 0, sourceParent);
-    // Measurement rows match on their own name; device rows match when they
-    // match themselves or any child matches.
-    const QString name = sourceModel()->data(index, Qt::DisplayRole).toString();
-    if (name.contains(filter_, Qt::CaseInsensitive))
-    {
-        return true;
-    }
-
-    const int childCount = sourceModel()->rowCount(index);
-    for (int i = 0; i < childCount; ++i)
-    {
-        if (filterAcceptsRow(i, index))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 // ---- ParamTreeModel ---------------------------------------------------------
+
+namespace
+{
+// Displayed label of a device group (table-model devices carry a marker).
+QString deviceLabel(const ParamInfo& p)
+{
+    return p.source == ParamSource::Table
+               ? QStringLiteral("[table] ") + p.device
+               : p.device;
+}
+
+QString suspiciousGroupToolTip(const QString& deviceName)
+{
+    return QStringLiteral(
+               "%1\nOne or more parameters below have conflicting "
+               "footer statistics across files (likely a corrupted "
+               "file in the set); their data is shown as-is.")
+        .arg(deviceName);
+}
+}  // namespace
 
 ParamTreeModel::ParamTreeModel(QObject* parent) : QStandardItemModel(parent)
 {
     setHorizontalHeaderLabels({QStringLiteral("Parameter"), QStringLiteral("Type")});
 }
 
-void ParamTreeModel::load(const QVector<ParamInfo>& params)
+void ParamTreeModel::load(const QVector<ParamInfo>& params,
+                           const QHash<QString, QString>& deviceTooltips)
 {
     params_ = params;
+    deviceTooltips_ = deviceTooltips;
+    filter_.clear();
+    rebuildTree();
+}
+
+void ParamTreeModel::setFilter(const QString& text)
+{
+    filter_ = text;
+    rebuildTree();
+}
+
+// Rebuild the visible rows from params_ under the current filter_:
+// measurements whose name matches (case-insensitive substring) plus their
+// device groups; a group whose own label matches stays even when no child
+// matches (same acceptance the old proxy had). Costs O(matches), not a
+// proxy re-walk over every source row.
+void ParamTreeModel::rebuildTree()
+{
     clear();
     setHorizontalHeaderLabels({QStringLiteral("Parameter"), QStringLiteral("Type")});
 
-    QString currentDevice;
+    const bool noFilter = filter_.isEmpty();
     QStandardItem* deviceItem = nullptr;
+    QString currentDevice;  // device whose group is open
     bool deviceSuspicious = false;
-    for (int i = 0; i < params.size(); ++i)
+
+    // Two-part tooltips (e.g. warning + file info) stack with a blank line.
+    const auto joinTip = [](const QString& a, const QString& b)
     {
-        const ParamInfo& p = params.at(i);
-        if (deviceItem == nullptr || p.device != currentDevice)
+        return a.isEmpty() ? b : (b.isEmpty() ? a : a + QStringLiteral("\n\n") + b);
+    };
+
+    // Close out the open device group: red label when any of its params
+    // carries a data-integrity flag (whole-group hint).
+    auto closeDevice = [&deviceItem, &deviceSuspicious, &joinTip]()
+    {
+        if (deviceItem != nullptr && deviceSuspicious)
         {
-            // Close out the previous device group: red label when any of its
-            // params carries a data-integrity flag (whole-group hint).
-            if (deviceItem != nullptr && deviceSuspicious)
-            {
-                deviceItem->setForeground(kSuspiciousColor);
-                deviceItem->setToolTip(QStringLiteral(
-                    "%1\nOne or more parameters below have conflicting "
-                    "footer statistics across files (likely a corrupted "
-                    "file in the set); their data is shown as-is.")
-                    .arg(deviceItem->text()));
-            }
+            deviceItem->setForeground(kSuspiciousColor);
+            deviceItem->setToolTip(joinTip(suspiciousGroupToolTip(deviceItem->text()),
+                                           deviceItem->toolTip()));
+        }
+        deviceItem = nullptr;
+        deviceSuspicious = false;
+    };
+    auto openDevice = [this, &joinTip](const ParamInfo& p) -> QStandardItem*
+    {
+        // Table params are marked so a mixed file stays readable.
+        auto* item = new QStandardItem(folderIcon(), deviceLabel(p));
+        item->setEditable(false);
+        if (p.source == ParamSource::Table)
+        {
+            item->setToolTip(QStringLiteral("table-model table: %1")
+                                 .arg(p.device));
+        }
+        // File info (contributing files, rows, coverage) on group rows.
+        item->setToolTip(joinTip(item->toolTip(), deviceTooltips_.value(p.device)));
+        auto* empty = new QStandardItem();
+        empty->setEditable(false);
+        appendRow({item, empty});
+        return item;
+    };
+
+    for (int i = 0; i < params_.size(); ++i)
+    {
+        const ParamInfo& p = params_.at(i);
+        if (p.device != currentDevice)
+        {
+            closeDevice();
             currentDevice = p.device;
-            // Table params are marked so a mixed file stays readable.
-            const QString label =
-                p.source == ParamSource::Table
-                    ? QStringLiteral("[table] ") + p.device
-                    : p.device;
-            deviceItem = new QStandardItem(folderIcon(), label);
-            deviceItem->setEditable(false);
-            if (p.source == ParamSource::Table)
+            // A matching group label shows the group even when no child
+            // matches.
+            if (!noFilter &&
+                deviceLabel(p).contains(filter_, Qt::CaseInsensitive))
             {
-                deviceItem->setToolTip(QStringLiteral("table-model table: %1")
-                                           .arg(p.device));
+                deviceItem = openDevice(p);
             }
-            auto* empty = new QStandardItem();
-            empty->setEditable(false);
-            appendRow({deviceItem, empty});
-            deviceSuspicious = false;
         }
-        auto* nameItem = new QStandardItem(leafIcon(), p.measurement);
-        nameItem->setEditable(false);
-        if (p.suspicious)
+        if (noFilter ||
+            p.measurement.contains(filter_, Qt::CaseInsensitive))
         {
-            nameItem->setForeground(kSuspiciousColor);
-            nameItem->setToolTip(QStringLiteral(
-                "%1\nThe footer statistics of this parameter's files "
-                "conflict (overlapping time ranges; one file is likely "
-                "corrupted) or the file was repaired after truncation. "
-                "Values are shown as loaded.")
-                .arg(p.measurement));
-            deviceSuspicious = true;
+            // First matching child opens its group.
+            if (deviceItem == nullptr)
+            {
+                deviceItem = openDevice(p);
+            }
+            auto* nameItem = new QStandardItem(leafIcon(), p.measurement);
+            nameItem->setEditable(false);
+            if (p.suspicious)
+            {
+                nameItem->setForeground(kSuspiciousColor);
+                nameItem->setToolTip(QStringLiteral(
+                    "%1\nThe footer statistics of this parameter's files "
+                    "conflict (overlapping time ranges; one file is likely "
+                    "corrupted) or the file was repaired after truncation. "
+                    "Values are shown as loaded.")
+                    .arg(p.measurement));
+                deviceSuspicious = true;
+            }
+            // Index into params_: paramAt() resolves through this role
+            // instead of the O(n) ownership walk.
+            nameItem->setData(i, RoleParamIndex);
+            auto* typeItem = new QStandardItem(TsFileNames::dataType(p.dataType));
+            typeItem->setEditable(false);
+            typeItem->setToolTip(QStringLiteral("type=%1 encoding=%2 compression=%3")
+                                     .arg(TsFileNames::dataType(p.dataType),
+                                          TsFileNames::encoding(p.encoding),
+                                          TsFileNames::compression(p.compression)));
+            deviceItem->appendRow({nameItem, typeItem});
         }
-        // Index into params_: paramAt() resolves through this role instead
-        // of the O(n) ownership walk.
-        nameItem->setData(i, RoleParamIndex);
-        auto* typeItem = new QStandardItem(TsFileNames::dataType(p.dataType));
-        typeItem->setEditable(false);
-        typeItem->setToolTip(QStringLiteral("type=%1 encoding=%2 compression=%3")
-                                 .arg(TsFileNames::dataType(p.dataType),
-                                      TsFileNames::encoding(p.encoding),
-                                      TsFileNames::compression(p.compression)));
-        deviceItem->appendRow({nameItem, typeItem});
     }
     // Last device group (loop closes groups on the NEXT device only).
-    if (deviceItem != nullptr && deviceSuspicious)
-    {
-        deviceItem->setForeground(kSuspiciousColor);
-        deviceItem->setToolTip(QStringLiteral(
-            "%1\nOne or more parameters below have conflicting "
-            "footer statistics across files (likely a corrupted "
-            "file in the set); their data is shown as-is.")
-            .arg(deviceItem->text()));
-    }
-}
-
-QModelIndex ParamTreeModel::indexOfParam(const ParamInfo& param) const
-{
-    for (int r = 0; r < rowCount(); ++r)
-    {
-        const QModelIndex dev = index(r, 0);
-        if (data(dev).toString() != param.device)
-        {
-            continue;
-        }
-        for (int c = 0; c < rowCount(dev); ++c)
-        {
-            const QModelIndex child = index(c, 0, dev);
-            if (data(child).toString() == param.measurement)
-            {
-                return child;
-            }
-        }
-    }
-    return {};
+    closeDevice();
 }
 
 ParamInfo ParamTreeModel::paramAt(const QModelIndex& measurementIndex) const

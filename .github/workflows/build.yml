@@ -87,7 +87,7 @@ jobs:
             arch: gcc_64
             artifact: linux64
           - os: macos-15-intel
-            arch: macos
+            arch: clang_64
             artifact: macos
     runs-on: ${{ matrix.os }}
     steps:

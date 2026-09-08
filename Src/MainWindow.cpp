@@ -399,10 +399,6 @@ void MainWindow::setupUi()
 
     auto addSep = [toolbar] { toolbar->addSeparator(); };
 
-    codecLabel_ = new QLabel(tr("Codec: -"), toolbar);
-    toolbar->addWidget(codecLabel_);
-    addSep();
-
     // Single label: show tree devices OR table count per file's model.
     devicesLabel_ = new QLabel(tr("Devices: -"), toolbar);
     toolbar->addWidget(devicesLabel_);
@@ -462,6 +458,11 @@ void MainWindow::setupUi()
     valuesBar->setFixedHeight(33);
     paramNameLabel_ = new QLabel(QString(), valuesBar);
     paramNameLabel_->setMinimumWidth(120);
+    // Muted codec right after the name: a per-param attribute like the
+    // name itself. Hidden in multi-file mode (files may disagree).
+    paramCodecLabel_ = new QLabel(QString(), valuesBar);
+    paramCodecLabel_->setStyleSheet(
+        QStringLiteral("color: #667085; padding-left: 2px;"));
     // Muted stats right next to the export button: rows · span · rate ·
     // min · max · mean (key:value form).
     paramStatLabel_ = new QLabel(QString(), valuesBar);
@@ -474,6 +475,7 @@ void MainWindow::setupUi()
     valuesBarLayout->setContentsMargins(4, 0, 4, 0);
     valuesBarLayout->setSpacing(4);
     valuesBarLayout->addWidget(paramNameLabel_);
+    valuesBarLayout->addWidget(paramCodecLabel_);
     valuesBarLayout->addStretch(1);
     valuesBarLayout->addWidget(paramStatLabel_);
     valuesBarLayout->addWidget(exportBtn_);
@@ -930,27 +932,6 @@ void MainWindow::showFilesDialog()
 {
     const auto dash = [](qint64 v)
     { return v < 0 ? QStringLiteral("-") : QString::number(v); };
-    // Distinct codec names of one file: "TS_2DIFF, PLAIN" style.
-    const auto codecNames = [](const QVector<int>& vals)
-    {
-        QStringList names;
-        for (int v : vals)
-        {
-            names << TsFileNames::encoding(v);
-        }
-        return names.isEmpty() ? QStringLiteral("-")
-                                : names.join(QStringLiteral(", "));
-    };
-    const auto compNames = [](const QVector<int>& vals)
-    {
-        QStringList names;
-        for (int v : vals)
-        {
-            names << TsFileNames::compression(v);
-        }
-        return names.isEmpty() ? QStringLiteral("-")
-                                : names.join(QStringLiteral(", "));
-    };
 
     // Row data for the damaged table (declared before the dialog so the
     // connect-lambdas below can never outlive it).
@@ -967,11 +948,10 @@ void MainWindow::showFilesDialog()
     boldFont.setBold(true);
     tableLabel->setFont(boldFont);
     auto* table = new QTableWidget(&dlg);
-    table->setColumnCount(11);
+    table->setColumnCount(9);
     table->setHorizontalHeaderLabels(
         {tr("No."), tr("Name"), tr("Size"), tr("Devices"), tr("Tables"),
-         tr("Params"), tr("Chunks"), tr("Rows"), tr("Time Range"),
-         tr("Encoding"), tr("Compression")});
+         tr("Params"), tr("Chunks"), tr("Rows"), tr("Time Range")});
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1065,8 +1045,7 @@ void MainWindow::showFilesDialog()
                         ? QStringLiteral("%1 .. %2")
                               .arg(formatFullTimeMs(fe.firstTs),
                                    formatFullTimeMs(fe.lastTs))
-                        : QStringLiteral("-"),
-                    codecNames(fe.encodings), compNames(fe.compressions)});
+                        : QStringLiteral("-")});
         }
         badPaths.clear();
         badSkipped.clear();
@@ -2109,8 +2088,7 @@ void MainWindow::clearContent()
     paramNameLabel_->setText(QString());
     paramStatLabel_->setText(QString());
     paramStatLabel_->setToolTip(QString());
-    codecLabel_->setVisible(true);
-    codecLabel_->setText(tr("Codec: -"));
+    paramCodecLabel_->setText(QString());
     analysisLabel_->setText(QString());
     plot_->setToolTip(QString());
     exportBtn_->setEnabled(false);
@@ -2185,13 +2163,13 @@ void MainWindow::onParamActivated()
     // Stats from the previous series are stale until the query completes.
     paramStatLabel_->setText(QString());
     paramStatLabel_->setToolTip(QString());
-    // Multi-file: one param spans several files whose codecs may differ,
-    // so no single toolbar value is honest — the files dialog lists the
-    // per-file codecs instead.
-    codecLabel_->setVisible(lastMeta_.fileCount <= 1);
-    codecLabel_->setText(tr("Codec: %1 / %2")
-                             .arg(TsFileNames::encoding(param.encoding),
-                                  TsFileNames::compression(param.compression)));
+    // Codec: single-file only — multi-file params span files whose codecs
+    // may differ, so no single value is honest.
+    paramCodecLabel_->setVisible(lastMeta_.fileCount <= 1);
+    paramCodecLabel_->setText(
+        QStringLiteral("%1 / %2")
+            .arg(TsFileNames::encoding(param.encoding),
+                 TsFileNames::compression(param.compression)));
     loadValues();
 }
 

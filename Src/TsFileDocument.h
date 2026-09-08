@@ -70,8 +70,6 @@ struct FileInfoEntry
     qint64 firstTs = 0;
     qint64 lastTs = 0;
     bool haveRange = false;
-    QVector<int> encodings;     // distinct encodings across the file's series
-    QVector<int> compressions;  // distinct compressions
 };
 Q_DECLARE_METATYPE(FileInfoEntry)
 

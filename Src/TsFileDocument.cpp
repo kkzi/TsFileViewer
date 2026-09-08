@@ -189,8 +189,6 @@ public:
         // perFile entries sorted by start time (query visit order).
         QVector<QPair<int, ParamSlice>> fileOrder;
         int dataType = 0;
-        int encoding = 0;
-        int compression = 0;
         qint64 totalRows = 0;
         bool treeSource = false;    // seen as tree device measurement
         bool tableSource = false;   // seen as table field column
@@ -269,7 +267,6 @@ public slots:
 
         // ---- tree part: devices > measurements ----------------------------
         auto devices = reader.get_all_device_ids();
-        QSet<int> encSet, compSet;  // distinct codecs (files dialog)
         for (const auto& device : devices)
         {
             const QString deviceName =
@@ -286,8 +283,6 @@ public slots:
                 p.dataType = static_cast<int>(s.data_type_);
                 p.encoding = static_cast<int>(s.encoding_);
                 p.compression = static_cast<int>(s.compression_type_);
-                encSet.insert(p.encoding);
-                compSet.insert(p.compression);
                 params.push_back(p);
             }
         }
@@ -321,11 +316,60 @@ public slots:
             }
         }
         meta.tableCount = static_cast<int>(meta.tables.size());
-        // Single-file mode has no footer-statistics walk, so the per-device
-        // tooltip carries just the file path.
+        // Single-file mode has no per-device footer walk, so the
+        // per-device tooltip carries just the file path.
         for (const QString& d : meta.devices + meta.tables)
         {
             meta.deviceInfo[d].files << path;
+        }
+
+        // ---- files-dialog numbers: footer walk, same numbers multi-file
+        // mode reports (per-series chunk statistics + chunk-list sizes,
+        // zero data decode). Table columns have no footer walk in either
+        // mode, so they contribute params only.
+        FileInfoEntry fe;
+        fe.path = path;
+        fe.size = QFileInfo(path).size();
+        fe.deviceCount = meta.deviceCount;
+        fe.tableCount = meta.tableCount;
+        fe.paramCount = static_cast<int>(params.size());
+        fe.chunkCount = 0;
+        fe.rowCount = 0;
+        const auto tsMeta = reader.get_timeseries_metadata();
+        for (const auto& kv : tsMeta)
+        {
+            for (const auto& tsip : kv.second)
+            {
+                if (const storage::Statistic* st = tsip->get_statistic())
+                {
+                    const qint64 cnt = st->get_count();
+                    fe.rowCount += qMax<qint64>(cnt, 0);
+                    if (cnt > 0)
+                    {
+                        const qint64 s0 = normalizeTsToMs(st->start_time_);
+                        const qint64 s1 = normalizeTsToMs(st->get_end_time());
+                        if (!fe.haveRange)
+                        {
+                            fe.firstTs = s0;
+                            fe.lastTs = s1;
+                            fe.haveRange = true;
+                        }
+                        else
+                        {
+                            fe.firstTs = qMin(fe.firstTs, s0);
+                            fe.lastTs = qMax(fe.lastTs, s1);
+                        }
+                    }
+                }
+                // Aligned series keep timestamps in the time chunk list;
+                // plain series in the single chunk list.
+                if (auto* list = tsip->is_aligned()
+                                     ? tsip->get_time_chunk_meta_list()
+                                     : tsip->get_chunk_meta_list())
+                {
+                    fe.chunkCount += list->size();
+                }
+            }
         }
         reader.close();
 
@@ -338,18 +382,6 @@ public slots:
         meta.paramCount = static_cast<int>(params.size());
         const QFileInfo fi(path);
         meta.fileSize = fi.size();
-        // Single-file mode skips the full metadata walk, so chunk/row
-        // counts stay unknown (-1); the dialog shows "-".
-        FileInfoEntry fe;
-        fe.path = path;
-        fe.size = meta.fileSize;
-        fe.deviceCount = meta.deviceCount;
-        fe.tableCount = meta.tableCount;
-        fe.paramCount = meta.paramCount;
-        fe.encodings = encSet.values().toVector();
-        std::sort(fe.encodings.begin(), fe.encodings.end());
-        fe.compressions = compSet.values().toVector();
-        std::sort(fe.compressions.begin(), fe.compressions.end());
         meta.fileEntries.append(fe);
         meta.repaired = recovered;
         meta.truncatedBytes = truncatedBytes;
@@ -552,8 +584,6 @@ public slots:
             p.device = key.left(sep);
             p.measurement = key.mid(sep + 1);
             p.dataType = r.dataType;
-            p.encoding = r.encoding;
-            p.compression = r.compression;
             // Overlapping footer statistics across files: one of the files is
             // likely corrupted (a truncated write leaves stale statistics) —
             // flag the param so the tree can render it in red. The data
@@ -680,36 +710,9 @@ public slots:
         QSet<QString> devices;
 
         const auto meta = reader.get_timeseries_metadata();
-        // Encoding/compression truth lives in the chunk headers; the
-        // ChunkMeta fields from the metadata index are uninitialized.
-        // get_timeseries_schema (fork fix) reads them — one cached 256-byte
-        // header read per series, same walk single-file mode always does.
-        QHash<QString, QPair<int, int>> codecs;  // route key -> (enc, comp)
-        for (const auto& kv : meta)
-        {
-            std::vector<storage::MeasurementSchema> schemas;
-            reader.get_timeseries_schema(kv.first, schemas);
-            for (const auto& s : schemas)
-            {
-                codecs.insert(
-                    QString::fromStdString(kv.first->get_device_name()) +
-                        QLatin1Char('\x01') +
-                        QString::fromStdString(s.measurement_name_),
-                    {static_cast<int>(s.encoding_),
-                     static_cast<int>(s.compression_type_)});
-            }
-        }
-        // Distinct codecs used in this file (for the files dialog).
-        QSet<int> encSet, compSet;
-        for (const auto& c : codecs)
-        {
-            encSet.insert(c.first);
-            compSet.insert(c.second);
-        }
-        fe.encodings = encSet.values().toVector();
-        std::sort(fe.encodings.begin(), fe.encodings.end());
-        fe.compressions = compSet.values().toVector();
-        std::sort(fe.compressions.begin(), fe.compressions.end());
+        // Codec truth lives in the chunk headers and needs a per-series
+        // get_timeseries_schema read (fork fix); the viewer shows codecs
+        // only in single-file mode, so multi-file skips that walk entirely.
         for (const auto& kv : meta)
         {
             const QString device =
@@ -724,11 +727,6 @@ public slots:
                 ParamSlice& s = r.perFile[fileIdx];
                 r.treeSource = true;
                 r.dataType = static_cast<int>(tsip->get_data_type());
-                if (const auto it = codecs.constFind(key); it != codecs.cend())
-                {
-                    r.encoding = it->first;
-                    r.compression = it->second;
-                }
                 if (const storage::Statistic* st =
                         tsip->get_statistic())  // aligned: value statistic
                 {

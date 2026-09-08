@@ -152,7 +152,7 @@ private:
     QString latestVersion_;            // newest tag from GitHub ("" unknown)
     bool updateAvailable_ = false;
     QNetworkAccessManager net_{this};  // update check
-    QLabel* codecLabel_ = nullptr;     // toolbar: current param's codec
+    QLabel* paramCodecLabel_ = nullptr;  // values bar: codec of the current param
     QLabel* paramNameLabel_ = nullptr; // values bar: current param name
     QLabel* paramStatLabel_ = nullptr; // values bar: rows · span · rate · min/max/mean
     class QPushButton* exportBtn_ = nullptr;  // values bar: CSV export

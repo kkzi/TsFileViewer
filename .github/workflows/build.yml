@@ -71,3 +71,53 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Experiment: build on POSIX (no deploy yet — artifacts only, Qt runtime
+  # not bundled). macos-13 is x86_64: Qt 5.15.2 official binaries have no
+  # arm64 build; revisit when the project moves to Qt 6.
+  posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: linux64
+          - os: macos-13
+            artifact: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev
+
+      - name: Setup Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          arch: ${{ runner.os == 'Linux' && 'linux64' || 'macos' }}
+
+      - name: Configure
+        run: cmake -B Build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+        env:
+          QTDIR: ${{ env.Qt5_DIR }}
+
+      - name: Build
+        run: cmake --build Build/ci
+
+      - name: Package
+        run: |
+          cd Build/Release/bin
+          tar czf ../../../TsFileViewer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz TsFileViewer
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TsFileViewer-${{ matrix.artifact }}
+          path: TsFileViewer-*.tar.gz

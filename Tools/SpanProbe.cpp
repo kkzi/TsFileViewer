@@ -90,8 +90,12 @@ int main(int argc, char** argv)
                             }
                             else
                             {
-                                firstTs = qMin(firstTs, st->start_time_);
-                                lastTs = qMax(lastTs, st->get_end_time());
+                                // qint64 vs int64_t mismatch long long/long
+                                // on Linux: cast to the common qint64.
+                                firstTs = qMin(firstTs,
+                                               qint64(st->start_time_));
+                                lastTs = qMax(lastTs,
+                                              qint64(st->get_end_time()));
                             }
                         }
                     }

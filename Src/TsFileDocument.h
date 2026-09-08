@@ -111,10 +111,11 @@ struct SeriesData
 {
     QString device;        // tree device or table name
     QString measurement;   // measurement / column name
-    QVector<qint64> ts;    // us
+    QVector<qint64> ts;    // ms (normalized from ms/us/ns input)
     QVector<double> value;  // NaN where the value is not numeric
     QVector<QString> text;  // non-empty only for STRING columns (parallel to value)
     bool numeric = true;    // false when the column holds text/boolean rows
+    int dataType = 0;       // common::TSDataType of the measurement
     qint64 totalRows = -1;  // whole series row count from metadata (-1 unknown)
     QString key() const { return device + QLatin1Char('/') + measurement; }
 };
@@ -182,4 +183,7 @@ namespace TsFileNames
 QString dataType(int t);
 QString encoding(int e);
 QString compression(int c);
+// Types whose values are integral: rendered without decimals (table,
+// stats, tracer, plot y-axis).
+bool isIntegerType(int t);
 }  // namespace TsFileNames

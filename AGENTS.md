@@ -66,11 +66,17 @@ Tools/IconGen.cpp          图标生成
 **span 用 max−min，不用 last−first**（`git 74a5b85`）
 - `last - first` 只有序列单调时才是时长。见下方陷阱。
 
+**时间单位：按幅值归一 ms/us/ns → 内部毫秒**（2026-08-29 定案，同日修订）
+- 生态事实：IoTDB 引擎有 `timestamp_precision` 配置（ms/us/ns，默认 ms，首启后不可改），发行包 `iotdb-system.properties.template:1243`；java tsfile 的 `tools/DateTimeUtils.getInstantWithPrecision` 接受三种精度。但精度只存在引擎配置里，**tsfile 文件本身不记录单位**，C++ 库也不感知（int64 透传）。
+- 所以 TsFileArchive 写微秒是合法的 us 模式，不是偏离规范；viewer 作为独立 reader 只能按幅值判断：真实采集数据都在 2000 年后 —— ms ≤ ~1e14（到公元 5138 年）、us 在 [1e14, 1e17)、ns ≥ ~1e17，三个数量级互不重叠。
+- 实现：`normalizeTsToMs()`（`TsFileDocument.cpp`）统一归一到内部毫秒；作用于 footer 统计（路由排序/重叠检测/对话框）和两处行循环（查询/CSV 导出）。
+- 决策史（避免重弯路）：同日早些时候曾因「QuickStart 文档写 ms」定案严格按毫秒、不兼容 TsFileArchive；核实 IoTDB 配置后修订为幅值归一。QuickStart 那句只描述默认精度。
+- 边界：真正的 1973 年前的 us 数据会被误判为 ms（数量级重叠区），对飞行测试数据不成立。
+
 **呈现格式约定**
-- 时间：表格 Time 列、tracer 提示为 `hh:mm:ss.zzzzzz`；toolbar Range 为 `yyyy-MM-dd hh:mm:ss.zzzzzz`；plot x 轴用自定义 `ClockTicker` 按当前 range 自适应（<0.5s → 微秒，<1.5 天 → `hh:mm:ss`，更长 → 带日期）。
-- Qt5 `QDateTime` 只到毫秒，微秒尾巴是从原始 `qint64` 微秒值手工拼的。
-- 数值：统一走 `ValueTableModel::formatValue`（English locale，`'f', 6`）→ 千分位 + 6 位小数，**不用科学计数法**。覆盖 Value 列、min/max/mean、状态栏、plot tooltip、tracer、y 轴刻度（`plot_->setLocale` + `setNumberFormat("f")` + `setNumberPrecision(6)`）。CSV 导出保留原始全精度。
-- 交互细节：搜索框 300ms 防抖，Enter 立即生效；plot 缩放有界（缩小不超过 `(0.8·min, 1.2·max)`，放大至少留 10 个点）；滚动条宽/高为 10px（半厚，handle 最小 32px 保证可抓）；tracer 只在显式激活时出现（双击/Enter/点击曲线），普通选中行不触发。
+- 时间：表格 Time 列、tracer 提示为 `hh:mm:ss.zzz`；toolbar Range 为 `yyyy-MM-dd hh:mm:ss.zzz`；plot x 轴用自定义 `ClockTicker` 按当前 range 自适应（<0.5s → 毫秒，<1.5 天 → `hh:mm:ss`，更长 → 带日期）。
+- 数值：统一走 `ValueTableModel::formatValue`（English locale，千分位，**不用科学计数法**）；浮点类型 `f,6` 六位小数，整数类型（INT32/INT64/TIMESTAMP）**无小数**，BOOLEAN 显示 true/false（plot 用 0/1，y 轴整数刻度）。覆盖 Value 列、min/max、状态栏、plot tooltip、tracer、y 轴刻度（`plot_->setLocale` + `setNumberFormat("f")`，精度按类型 0/6）。mean 始终保留小数（均值本质可分数）。CSV 导出：数值保留原始全精度，时间为秒（毫秒精度，尾零去掉）。
+- 交互细节：搜索框 300ms 防抖，Enter 立即生效；plot 缩放有界（缩小不超过 `(0.8·min, 1.2·max)`，放大至少留 10 个点）；滚动条宽/高为 10px（半厚，handle 最小 32px 保证可抓）；tracer 只在显式激活时出现（双击/Enter/点击曲线），普通选中行不触发。状态栏不重复参数栏的 min/max/mean/n，只放 SFID 分析这类独有信息。
 
 **代码与提交约定**
 - 代码文件只用英文，必要处才加注释（来自全局 `~/.claude/CLAUDE.md`）。
@@ -103,7 +109,7 @@ timeseries index 的统计是对下属 chunk 做 min/max 归并，所以这一�
 | `--list <file>` | 列出 device.measurement 名字 | footer |
 | `--stats <dir> <dev> <meas>` | 只看 footer 聚合统计 | footer |
 | `--chunks <dir> <dev> <meas>` | **per-chunk 统计，首选** | footer |
-| `--range <startUs>,<endUs> <dir> <dev> <meas>` | 时间窗内的行，用来分辨「坏统计」还是「真乱序」 | 只解码相交 chunk |
+| `--range <startMs>,<endMs> <dir> <dev> <meas>` | 时间窗内的行，用来分辨「坏统计」还是「真乱序」 | 只解码相交 chunk |
 | `--rows <offset>,<limit> <dir> <dev> <meas>` | 行窗口（**不可信，见下**） | 部分解码 |
 | 无 flag（`<dir> <dev> <meas>`） | 每文件全行扫描 | 极慢 |
 

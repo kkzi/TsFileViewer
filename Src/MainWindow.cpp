@@ -72,16 +72,12 @@ constexpr qint64 kScatterVisibleLimit = 2000;
 // than a handful of samples has no information left).
 constexpr qint64 kMinVisiblePoints = 10;
 
-// Timestamp (microseconds since epoch) -> "yyyy-MM-dd hh:mm:ss.zzzzzz":
-// QDateTime resolves milliseconds, so the microsecond tail is appended from
-// the raw value.
-QString formatFullTimeUs(qint64 ts)
+// Timestamp (milliseconds since epoch, per the tsfile spec) ->
+// "yyyy-MM-dd hh:mm:ss.zzz".
+QString formatFullTimeMs(qint64 ts)
 {
-    const qint64 ms = ts / 1000;
-    const int usRemainder = static_cast<int>(ts - ms * 1000);
-    return QDateTime::fromMSecsSinceEpoch(ms).toString(
-               QStringLiteral("yyyy-MM-dd hh:mm:ss")) +
-           QStringLiteral(".%1").arg(usRemainder, 3, 10, QLatin1Char('0'));
+    return QDateTime::fromMSecsSinceEpoch(ts).toString(
+        QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz"));
 }
 
 // Sample rate for the values-bar stats; kHz above 10 kHz for readability.
@@ -123,7 +119,7 @@ QString deviceToolTipText(const DeviceFileInfo& d)
     if (d.haveRange)
     {
         lines << QStringLiteral("Range: %1 .. %2")
-                     .arg(formatFullTimeUs(d.firstTs), formatFullTimeUs(d.lastTs));
+                     .arg(formatFullTimeMs(d.firstTs), formatFullTimeMs(d.lastTs));
     }
     return lines.join(QLatin1Char('\n'));
 }
@@ -145,13 +141,13 @@ void panToBand(QCustomPlot* plot, const SeriesData& series, double t)
     if (frac < 0.1)
     {
         const double lower =
-            qMax(t - 0.1 * span, static_cast<double>(series.ts.first()) / 1e6);
+            qMax(t - 0.1 * span, static_cast<double>(series.ts.first()) / 1e3);
         plot->xAxis->setRange(lower, lower + span);
     }
     else if (frac > 0.9)
     {
         const double upper =
-            qMin(t + 0.1 * span, static_cast<double>(series.ts.last()) / 1e6);
+            qMin(t + 0.1 * span, static_cast<double>(series.ts.last()) / 1e3);
         plot->xAxis->setRange(upper - span, upper);
     }
 }
@@ -168,11 +164,10 @@ qint64 countInRange(const QCPGraphDataContainer* data, double lower, double uppe
     return e - b;
 }
 
-// X-axis ticker: wall-clock labels ("hh:mm:ss.zzzzzz") for coordinates in
-// seconds since epoch. QDateTime only resolves milliseconds, so the label is
-// built the same way as ValueTableModel::formatTimeUs. The label width
-// follows the view span: microseconds below 0.5 s, whole seconds up to
-// ~1.5 days, date+time beyond (the day must stay visible).
+// X-axis ticker: wall-clock labels for coordinates in seconds since
+// epoch; timestamps are milliseconds per the tsfile spec. The label
+// width follows the view span: milliseconds below 0.5 s, whole seconds
+// up to ~1.5 days, date+time beyond (the day must stay visible).
 class ClockTicker : public QCPAxisTicker
 {
 public:
@@ -185,15 +180,12 @@ protected:
         Q_UNUSED(locale)
         Q_UNUSED(formatChar)
         Q_UNUSED(precision)
-        const qint64 us = static_cast<qint64>(llround(tick * 1e6));
-        const qint64 ms = us / 1000;
-        const int usTail = static_cast<int>(us - ms * 1000);
-        const QDateTime dt = QDateTime::fromMSecsSinceEpoch(ms);
+        const QDateTime dt = QDateTime::fromMSecsSinceEpoch(
+            static_cast<qint64>(llround(tick * 1e3)));
         const double span = axis_->range().size();
         if (span < 0.5)
         {
-            return dt.toString(QStringLiteral("hh:mm:ss")) +
-                   QStringLiteral(".%1").arg(usTail, 3, 10, QLatin1Char('0'));
+            return dt.toString(QStringLiteral("hh:mm:ss.zzz"));
         }
         if (span < 86400.0 * 1.5)
         {
@@ -565,7 +557,7 @@ void MainWindow::setupUi()
     // since ts is sorted).
     connect(plot_, &QCustomPlot::mousePress, this,
             [this](QMouseEvent* ev) { onPlotMousePress(ev); });
-    // X axis labels are wall-clock time (ClockTicker: hh:mm:ss[.zzzzzz],
+    // X axis labels are wall-clock time (ClockTicker: hh:mm:ss[.zzz],
     // date prefix when the view spans days). Fixed y labels: English locale
     // groups thousands and 'f' never produces scientific notation.
     plot_->setLocale(QLocale(QLocale::English, QLocale::UnitedStates));
@@ -865,8 +857,8 @@ void MainWindow::updateMetaBar(const MetaInfo& meta)
     rangeLabel_->setText(
         meta.haveTimeRange
             ? tr("Range: %1 .. %2")
-                  .arg(formatFullTimeUs(meta.firstTs),
-                       formatFullTimeUs(meta.lastTs))
+                  .arg(formatFullTimeMs(meta.firstTs),
+                       formatFullTimeMs(meta.lastTs))
             : tr("Range: -"));
 
     // Secondary details live in the file label's tooltip.
@@ -1071,8 +1063,8 @@ void MainWindow::showFilesDialog()
                     dash(fe.rowCount),
                     fe.haveRange
                         ? QStringLiteral("%1 .. %2")
-                              .arg(formatFullTimeUs(fe.firstTs),
-                                   formatFullTimeUs(fe.lastTs))
+                              .arg(formatFullTimeMs(fe.firstTs),
+                                   formatFullTimeMs(fe.lastTs))
                         : QStringLiteral("-"),
                     codecNames(fe.encodings), compNames(fe.compressions)});
         }
@@ -1301,7 +1293,7 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
             if (t > maxTs) maxTs = t;
         }
         const double spanS =
-            static_cast<double>(maxTs - minTs) / 1e6;
+            static_cast<double>(maxTs - minTs) / 1e3;
         const int n = series.ts.size();
         QString rate = tr("-");
         if (n >= 2 && spanS > 0.0)
@@ -1313,9 +1305,12 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
                             .arg(QString::number(spanS, 'f', 3), rate);
         if (statFinite_ > 0)
         {
+            // Integral types: min/max without decimals; the mean stays
+            // fractional (an average genuinely is).
+            const bool intType = TsFileNames::isIntegerType(series.dataType);
             stats += tr("  min: %1  max: %2  mean: %3")
-                         .arg(ValueTableModel::formatValue(statVmin_),
-                              ValueTableModel::formatValue(statVmax_),
+                         .arg(ValueTableModel::formatValue(statVmin_, intType),
+                              ValueTableModel::formatValue(statVmax_, intType),
                               ValueTableModel::formatValue(statSum_ / statFinite_));
         }
         paramStatLabel_->setText(stats);
@@ -1363,26 +1358,16 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
             prev = v;
         }
         analysisLabel_->setText(
-            tr("SFID: %1/%2 steps +1, %3 wrap(s) to min, %4 other step(s)"
-               "  |  range %5..%6")
+            tr("SFID: %1/%2 steps +1, %3 wrap(s) to min, %4 other step(s)")
                 .arg(inc1)
                 .arg(statFinite_ - (statFinite_ > 0 ? 1 : 0))
                 .arg(wraps)
-                .arg(violations)
-                .arg(ValueTableModel::formatValue(statVmin_))
-                .arg(ValueTableModel::formatValue(statVmax_)));
-    }
-    else if (statFinite_ > 0)
-    {
-        analysisLabel_->setText(
-            tr("min=%1  max=%2  mean=%3  n=%4")
-                .arg(ValueTableModel::formatValue(statVmin_),
-                     ValueTableModel::formatValue(statVmax_),
-                     ValueTableModel::formatValue(statSum_ / statFinite_))
-                .arg(statFinite_));
+                .arg(violations));
     }
     else
     {
+        // Plain min/max/mean live in the values bar next to the parameter
+        // name; the status bar only carries analysis that is unique (SFID).
         analysisLabel_->setText(QString());
     }
 
@@ -1391,8 +1376,10 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
     tip << tr("Points: %1").arg(series.ts.size());
     if (statFinite_ > 0)
     {
-        tip << tr("Min: %1").arg(ValueTableModel::formatValue(statVmin_));
-        tip << tr("Max: %1").arg(ValueTableModel::formatValue(statVmax_));
+        // Same integral-type rule as the values bar.
+        const bool intType = TsFileNames::isIntegerType(series.dataType);
+        tip << tr("Min: %1").arg(ValueTableModel::formatValue(statVmin_, intType));
+        tip << tr("Max: %1").arg(ValueTableModel::formatValue(statVmax_, intType));
         tip << tr("Mean: %1").arg(ValueTableModel::formatValue(statSum_ / statFinite_));
     }
     if (statNa_ > 0)
@@ -1403,8 +1390,8 @@ void MainWindow::finishValuesLoad(const SeriesData& series)
     if (!series.ts.isEmpty())
     {
         rangeLabel_->setText(tr("Range: %1 .. %2")
-                                 .arg(formatFullTimeUs(series.ts.first()),
-                                      formatFullTimeUs(series.ts.last())));
+                                 .arg(formatFullTimeMs(series.ts.first()),
+                                      formatFullTimeMs(series.ts.last())));
     }
     else
     {
@@ -1420,7 +1407,11 @@ void MainWindow::rebuildPlot()
     if (series != nullptr && !series->ts.isEmpty() && series->numeric)
     {
         auto* graph = plot_->addGraph();
-        // X axis in seconds (ts / 1e6, same base as the Time column). Raw
+        // Integral series: integer y tick labels (no decimals, thousand
+        // groups stay). Fractional types keep the fixed 6 decimals.
+        plot_->yAxis->setNumberPrecision(
+            TsFileNames::isIntegerType(series->dataType) ? 0 : 6);
+        // X axis in seconds (ts / 1e3, same base as the Time column). Raw
         // points live in plotData_ (shared container, chunk-appended);
         // rebuildPlot only re-attaches, so progressive chunks don't copy.
         if (!plotData_.isNull())
@@ -1605,7 +1596,7 @@ void MainWindow::appendPlotData(const SeriesData& chunk, bool fresh)
     pts.reserve(chunk.ts.size());
     for (int i = 0; i < chunk.ts.size(); ++i)
     {
-        pts.push_back({static_cast<double>(chunk.ts.at(i)) / 1e6,
+        pts.push_back({static_cast<double>(chunk.ts.at(i)) / 1e3,
                        chunk.value.at(i)});
     }
     // Rows stream in file order and ts is monotonic within a file: sorted.
@@ -1626,8 +1617,8 @@ QSharedPointer<QCPGraphDataContainer> MainWindow::buildEnvelope() const
         return {};
     }
     const qint64 n = series->ts.size();
-    const double t0 = static_cast<double>(series->ts.first()) / 1e6;
-    const double t1 = static_cast<double>(series->ts.last()) / 1e6;
+    const double t0 = static_cast<double>(series->ts.first()) / 1e3;
+    const double t1 = static_cast<double>(series->ts.last()) / 1e3;
     if (t1 <= t0)
     {
         return {};  // degenerate span: raw data is small anyway
@@ -1671,7 +1662,7 @@ QSharedPointer<QCPGraphDataContainer> MainWindow::buildEnvelope() const
             return {};
         }
         prevTs = ts;
-        const double t = static_cast<double>(ts) / 1e6;
+        const double t = static_cast<double>(ts) / 1e3;
         const double v = series->value.at(int(i));
         const qint64 b = qMin(kEnvelopeBuckets - 1,
                               static_cast<qint64>((t - t0) * scale));
@@ -1816,7 +1807,7 @@ void MainWindow::updateTracer(int row)
         plot_->replot(QCustomPlot::rpQueuedReplot);
         return;
     }
-    tracer_->setGraphKey(static_cast<double>(series->ts[row]) / 1e6);
+    tracer_->setGraphKey(static_cast<double>(series->ts[row]) / 1e3);
     if (tracerInfo_ != nullptr)
     {
         // Readout: wall-clock timestamp (same format as the Time column) +
@@ -1824,10 +1815,12 @@ void MainWindow::updateTracer(int row)
         // via the shared formatter.
         QString value = row < series->text.size() && !series->text[row].isEmpty()
                             ? series->text[row]
-                            : ValueTableModel::formatValue(series->value[row]);
+                            : ValueTableModel::formatValue(
+                                  series->value[row],
+                                  TsFileNames::isIntegerType(series->dataType));
         tracerInfo_->setText(
             QStringLiteral("%1\n%2: %3")
-                .arg(ValueTableModel::formatTimeUs(series->ts[row]),
+                .arg(ValueTableModel::formatTimeMs(series->ts[row]),
                      series->measurement, value));
     }
     plot_->replot(QCustomPlot::rpQueuedReplot);
@@ -1857,7 +1850,7 @@ void MainWindow::selectSampleRow(int row)
     }
     // Same for the plot: the selected sample must always sit in the middle
     // 80% of the view (10%..90%) — shared rule with the table-driven sync.
-    panToBand(plot_, *series, static_cast<double>(series->ts[row]) / 1e6);
+    panToBand(plot_, *series, static_cast<double>(series->ts[row]) / 1e3);
     updateTracer(row);
 }
 
@@ -1871,7 +1864,7 @@ void MainWindow::syncPlotToRow(const QModelIndex& idx)
     {
         return;
     }
-    panToBand(plot_, *series, static_cast<double>(series->ts.at(row)) / 1e6);
+    panToBand(plot_, *series, static_cast<double>(series->ts.at(row)) / 1e3);
     plot_->replot();
     updateTracer(row);
 }
@@ -1896,9 +1889,9 @@ void MainWindow::activateRow(const QModelIndex& idx)
         const int half = static_cast<int>(kScatterVisibleLimit / 2 - 1);
         const int lo = qMax(0, row - half);
         const int hi = qMin(n - 1, row + half);
-        double a = static_cast<double>(series->ts.at(lo)) / 1e6;
-        double b = static_cast<double>(series->ts.at(hi)) / 1e6;
-        const double t = static_cast<double>(series->ts.at(row)) / 1e6;
+        double a = static_cast<double>(series->ts.at(lo)) / 1e3;
+        double b = static_cast<double>(series->ts.at(hi)) / 1e3;
+        const double t = static_cast<double>(series->ts.at(row)) / 1e3;
         // Duplicate timestamps can pack more points into the value range
         // than the window's row count — the marker visibility check counts
         // by value. Shrink symmetrically around the selected sample until
@@ -1922,8 +1915,8 @@ void MainWindow::activateRow(const QModelIndex& idx)
     else
     {
         // Whole series already fits under the marker threshold.
-        plot_->xAxis->setRange(static_cast<double>(series->ts.first()) / 1e6,
-                               static_cast<double>(series->ts.last()) / 1e6);
+        plot_->xAxis->setRange(static_cast<double>(series->ts.first()) / 1e3,
+                               static_cast<double>(series->ts.last()) / 1e3);
     }
     plot_->replot();
     updateTracer(row);
@@ -1939,7 +1932,7 @@ int MainWindow::nearestSampleRow(double t) const
         return -1;
     }
     const QVector<qint64>& ts = series->ts;
-    const double tx = t * 1e6;  // back to us
+    const double tx = t * 1e3;  // back to ms (tsfile spec unit)
     // First sample >= t by bisection (ts sorted ascending)...
     int lo = 0, hi = ts.size() - 1;
     while (lo < hi)

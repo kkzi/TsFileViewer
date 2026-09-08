@@ -71,13 +71,13 @@ public:
     void compactText();
     const SeriesData* series() const { return series_.get(); }
     // Numeric cell formatter (NaN -> "-"): thousand separators, fixed 6
-    // decimals, no scientific notation. Shared with the plot tracer readout
-    // and the stats labels.
-    static QString formatValue(double v);
-    // Timestamp (microseconds since epoch) -> "hh:mm:ss.zzzzzz" (clock time,
-    // date omitted). The microsecond tail is appended manually because
-    // QDateTime only resolves milliseconds.
-    static QString formatTimeUs(qint64 ts);
+    // decimals, no scientific notation. integer=true renders whole numbers
+    // without decimals (INT32/INT64/TIMESTAMP/BOOLEAN columns). Shared with
+    // the plot tracer readout and the stats labels.
+    static QString formatValue(double v, bool integer = false);
+    // Timestamp (milliseconds since epoch, per the tsfile spec) ->
+    // "hh:mm:ss.zzz" (clock time, date omitted).
+    static QString formatTimeMs(qint64 ts);
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     int columnCount(const QModelIndex& parent = QModelIndex()) const override;

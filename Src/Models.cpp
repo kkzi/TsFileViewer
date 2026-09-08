@@ -351,13 +351,14 @@ QVariant ValueTableModel::data(const QModelIndex& index, int role) const
         case ColNo:
             return static_cast<qint64>(row + 1);
         case ColTime:
-            return formatTimeUs(series_->ts[row]);
+            return formatTimeMs(series_->ts[row]);
         case ColValue:
             if (row < series_->text.size() && !series_->text[row].isEmpty())
             {
                 return series_->text[row];
             }
-            return formatValue(series_->value[row]);
+            return formatValue(series_->value[row],
+                               TsFileNames::isIntegerType(series_->dataType));
         default:
             return {};
     }
@@ -378,7 +379,7 @@ QVariant ValueTableModel::headerData(int section, Qt::Orientation orientation, i
     }
 }
 
-QString ValueTableModel::formatValue(double v)
+QString ValueTableModel::formatValue(double v, bool integer)
 {
     if (std::isnan(v))
     {
@@ -386,19 +387,18 @@ QString ValueTableModel::formatValue(double v)
     }
     // Thousand-separated plain decimal, fixed 6 decimals: no scientific
     // notation for large/small magnitudes. English locale = comma groups +
-    // point decimal separator.
+    // point decimal separator. Integral types drop the decimals entirely.
     static const QLocale loc(QLocale::English, QLocale::UnitedStates);
+    if (integer)
+    {
+        return loc.toString(static_cast<qint64>(std::llround(v)));
+    }
     return loc.toString(v, 'f', 6);
 }
 
-QString ValueTableModel::formatTimeUs(qint64 ts)
+QString ValueTableModel::formatTimeMs(qint64 ts)
 {
-    // QDateTime resolves milliseconds only; the microsecond tail comes from
-    // the raw value. Negative epochs floor toward -infinity so the fraction
-    // stays in [0, 1000).
-    const qint64 ms = ts / 1000;
-    const int usRemainder = static_cast<int>(ts - ms * 1000);
-    return QDateTime::fromMSecsSinceEpoch(ms).toString(
-               QStringLiteral("hh:mm:ss")) +
-           QStringLiteral(".%1").arg(usRemainder, 3, 10, QLatin1Char('0'));
+    // Timestamps are milliseconds since epoch per the tsfile spec.
+    return QDateTime::fromMSecsSinceEpoch(ts).toString(
+        QStringLiteral("hh:mm:ss.zzz"));
 }

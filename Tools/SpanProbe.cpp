@@ -5,7 +5,7 @@
 //   SpanProbe --list <file>                       list device.measurement
 //   SpanProbe --stats <dir> <device> <measurement>  footer stats only (fast)
 //   SpanProbe --chunks <dir> <device> <measurement> per-chunk stats (fast)
-//   SpanProbe --range <startUs> <endUs> <dir> <device> <measurement>
+//   SpanProbe --range <startMs> <endMs> <dir> <device> <measurement>
 //                                                 rows inside a time window
 //   SpanProbe --rows offset,limit <dir> <device> <measurement>
 //                                                 row window via offset/limit
@@ -34,6 +34,12 @@ int main(int argc, char** argv)
     QCommandLineOption listOpt(QStringLiteral("list"),
                                QStringLiteral("list device.measurement names and exit"));
     parser.addOption(listOpt);
+    QCommandLineOption fileInfoOpt(QStringLiteral(
+        "fileinfo"),
+        QStringLiteral("per-file footer summary exactly as the viewer's "
+                       "files dialog computes it (devices/tables/params/"
+                       "chunks/rows/time range): fileinfo <file>..."));
+    parser.addOption(fileInfoOpt);
     QCommandLineOption statsOpt(QStringLiteral("stats"),
                                 QStringLiteral("footer statistics only (fast, no row scan)"));
     parser.addOption(statsOpt);
@@ -44,7 +50,7 @@ int main(int argc, char** argv)
         QStringLiteral("range"),
         QStringLiteral("time-window row query: only chunks overlapping "
                        "[start,end] are decoded"),
-        QStringLiteral("startUs,endUs"));
+        QStringLiteral("startMs,endMs"));
     parser.addOption(rangeOpt);
     QCommandLineOption rowsOpt(
         QStringLiteral("rows"),
@@ -52,6 +58,83 @@ int main(int argc, char** argv)
         QStringLiteral("offset,limit"));
     parser.addOption(rowsOpt);
     parser.process(app);
+
+    if (parser.isSet(fileInfoOpt))
+    {
+        // Mirrors TsFileDocument::appendFileToRoutes() field by field so
+        // the dialog's numbers can be verified from the command line.
+        for (const QString& path : parser.positionalArguments())
+        {
+            storage::TsFileReader reader;
+            if (reader.open(path.toStdString()) != common::E_OK)
+            {
+                printf("%s: OPEN FAILED\n", qPrintable(path));
+                continue;
+            }
+            const auto meta = reader.get_timeseries_metadata();
+            int deviceCount = 0, tableCount = 0, paramCount = 0;
+            qint64 chunkCount = 0, rowCount = 0;
+            qint64 firstTs = 0, lastTs = 0;
+            bool haveRange = false;
+            for (const auto& kv : meta)
+            {
+                ++deviceCount;
+                for (const auto& tsip : kv.second)
+                {
+                    ++paramCount;
+                    if (const storage::Statistic* st = tsip->get_statistic())
+                    {
+                        rowCount += qMax<qint64>(st->get_count(), 0);
+                        if (st->get_count() > 0)
+                        {
+                            if (!haveRange)
+                            {
+                                firstTs = st->start_time_;
+                                lastTs = st->get_end_time();
+                                haveRange = true;
+                            }
+                            else
+                            {
+                                firstTs = qMin(firstTs, st->start_time_);
+                                lastTs = qMax(lastTs, st->get_end_time());
+                            }
+                        }
+                    }
+                    if (auto* list = tsip->is_aligned()
+                                         ? tsip->get_time_chunk_meta_list()
+                                         : tsip->get_chunk_meta_list())
+                    {
+                        chunkCount += list->size();
+                    }
+                }
+            }
+            for (const auto& ts : reader.get_all_table_schemas())
+            {
+                if (ts == nullptr || ts->is_virtual_table())
+                {
+                    continue;
+                }
+                ++tableCount;
+                const auto categories = ts->get_column_categories();
+                for (const auto c : categories)
+                {
+                    if (c == common::ColumnCategory::FIELD)
+                    {
+                        ++paramCount;
+                    }
+                }
+            }
+            printf("%s\n  devices=%d tables=%d params=%d chunks=%lld rows=%lld"
+                   " range=%s\n",
+                   qPrintable(path), deviceCount, tableCount, paramCount,
+                   chunkCount, rowCount,
+                   haveRange ? qPrintable(QString::number(firstTs) + ".." +
+                                          QString::number(lastTs))
+                             : "-");
+            reader.close();
+        }
+        return 0;
+    }
 
     if (parser.isSet(listOpt))
     {
@@ -128,7 +211,7 @@ int main(int argc, char** argv)
                     if (row == nullptr) continue;
                     const qint64 ts = row->get_field(0)->get_value<int64_t>();
                     const QDateTime dt =
-                        QDateTime::fromMSecsSinceEpoch(ts / 1000);
+                        QDateTime::fromMSecsSinceEpoch(ts);
                     printf("  row %-5d %s (%lld)\n", offset + i,
                            qPrintable(dt.toString(
                                QStringLiteral("hh:mm:ss.zzz"))),
@@ -152,11 +235,11 @@ int main(int argc, char** argv)
             parser.value(rangeOpt).split(QLatin1Char(','));
         if (parts.size() != 2)
         {
-            printf("--range needs startUs,endUs\n");
+            printf("--range needs startMs,endMs\n");
             return 1;
         }
-        const qint64 startUs = parts.at(0).toLongLong();
-        const qint64 endUs = parts.at(1).toLongLong();
+        const qint64 startMs = parts.at(0).toLongLong();
+        const qint64 endMs = parts.at(1).toLongLong();
         for (const QString& name : files)
         {
             storage::TsFileReader reader;
@@ -168,7 +251,7 @@ int main(int argc, char** argv)
             std::vector<std::string> pathList{fullPath.toStdString()};
             storage::ResultSet* result = nullptr;
             qint64 n = 0, first = 0, last = 0;
-            if (reader.query(pathList, startUs, endUs, result) == common::E_OK &&
+            if (reader.query(pathList, startMs, endMs, result) == common::E_OK &&
                 result != nullptr)
             {
                 bool hasNext = false;
@@ -203,11 +286,11 @@ int main(int argc, char** argv)
         // per chunk, each with its own [start, end, count]. Decoding nothing,
         // this shows the *internal* order of a file, which the aggregated
         // per-file statistic (a min/max merge) cannot reveal.
-        auto fmt = [](qint64 us)
+        auto fmt = [](qint64 ms)
         {
-            const QDateTime dt = QDateTime::fromMSecsSinceEpoch(us / 1000);
+            const QDateTime dt = QDateTime::fromMSecsSinceEpoch(ms);
             return dt.toString(QStringLiteral("hh:mm:ss.zzz")).toStdString() +
-                   QString(QStringLiteral(" (%1)")).arg(us).toStdString();
+                   QString(QStringLiteral(" (%1)")).arg(ms).toStdString();
         };
         for (const QString& name : files)
         {
@@ -325,11 +408,11 @@ int main(int argc, char** argv)
             fflush(stdout);
         }
         printf("\n\n");
-        auto fmt = [](qint64 us)
+        auto fmt = [](qint64 ms)
         {
-            const QDateTime dt = QDateTime::fromMSecsSinceEpoch(us / 1000);
+            const QDateTime dt = QDateTime::fromMSecsSinceEpoch(ms);
             return dt.toString(QStringLiteral("hh:mm:ss.zzz")).toStdString() +
-                   QString(QStringLiteral(" (%1)")).arg(us).toStdString();
+                   QString(QStringLiteral(" (%1)")).arg(ms).toStdString();
         };
         for (const SRow& r : srows)
         {
@@ -337,7 +420,7 @@ int main(int argc, char** argv)
                    qPrintable(r.file),
                    fmt(r.start).c_str(), fmt(r.end).c_str(),
                    static_cast<long long>(r.count),
-                   static_cast<double>(r.end - r.start) / 1e6);
+                   static_cast<double>(r.end - r.start) / 1e3);
         }
         // Sorted view (what routes_ uses for concat order) + overlap check.
         std::sort(srows.begin(), srows.end(),
@@ -454,11 +537,11 @@ int main(int argc, char** argv)
     }
     printf("\n\n");
 
-    auto fmt = [](qint64 us)
+    auto fmt = [](qint64 ms)
     {
-        const QDateTime dt = QDateTime::fromMSecsSinceEpoch(us / 1000);
+        const QDateTime dt = QDateTime::fromMSecsSinceEpoch(ms);
         return dt.toString(QStringLiteral("hh:mm:ss.zzz")).toStdString() +
-               QString(QStringLiteral(" (%1)")).arg(us).toStdString();
+               QString(QStringLiteral(" (%1)")).arg(ms).toStdString();
     };
     for (const Row& r : rows)
     {
@@ -494,7 +577,7 @@ int main(int argc, char** argv)
         globalFirst = std::min(globalFirst, r.dataFirst);
         globalLast = std::max(globalLast, r.dataLast);
     }
-    printf("\nglobal span (min first .. max last) = %lld us\n",
+    printf("\nglobal span (min first .. max last) = %lld ms\n",
            static_cast<long long>(globalLast - globalFirst));
     return 0;
 }

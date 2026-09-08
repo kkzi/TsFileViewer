@@ -33,6 +33,25 @@
 #include <limits>
 #include <optional>
 
+// Timestamp unit normalization. The tsfile format does not record its
+// timestamp unit; IoTDB (the reference engine) picks ms/us/ns via its
+// timestamp_precision setting, default ms. Recorded data is post-2000:
+// in ms that is <= ~1e14 (through year 5140), in us within [~1e14, 1e17),
+// in ns >= ~1e17 — three clean decades. The magnitude decides; everything
+// is normalized to milliseconds, this viewer's internal unit.
+inline qint64 normalizeTsToMs(qint64 raw)
+{
+    if (raw < qint64(100000000000000))
+    {
+        return raw;  // already ms (spec default)
+    }
+    if (raw < qint64(100000000000000000))
+    {
+        return raw / 1000;  // us
+    }
+    return raw / 1000000;  // ns
+}
+
 namespace
 {
 // No "using namespace common" here: windows.h (via PathBridge.h) defines
@@ -88,6 +107,8 @@ bool fieldToValues(const storage::Field* f, double& v, QString& text)
     {
         case common::BOOLEAN:
             v = f->value_.bval_ ? 1.0 : 0.0;
+            text = f->value_.bval_ ? QStringLiteral("true")
+                                   : QStringLiteral("false");
             break;
         case common::INT32: v = static_cast<double>(f->value_.ival_); break;
         case common::INT64:
@@ -138,6 +159,11 @@ namespace TsFileNames
 QString dataType(int t) { return dataTypeName(t); }
 QString encoding(int e) { return encodingName(e); }
 QString compression(int c) { return compressionName(c); }
+bool isIntegerType(int t)
+{
+    return t == common::INT32 || t == common::INT64 ||
+           t == common::TIMESTAMP || t == common::BOOLEAN;
+}
 }  // namespace TsFileNames
 
 // Runs on the worker thread. Holds the readers; the UI thread only ever sees
@@ -707,8 +733,8 @@ public slots:
                         tsip->get_statistic())  // aligned: value statistic
                 {
                     s.count = st->get_count();
-                    s.startTs = st->start_time_;
-                    s.endTs = st->get_end_time();
+                    s.startTs = normalizeTsToMs(st->start_time_);
+                    s.endTs = normalizeTsToMs(st->get_end_time());
                 }
                 r.totalRows += s.count;
                 fe.paramCount++;
@@ -838,6 +864,7 @@ public slots:
         out.device = param.device;
         out.measurement = param.measurement;
         out.numeric = param.dataType != common::TEXT;
+        out.dataType = param.dataType;
 
         bool haveData = false;
         int64_t minTs = std::numeric_limits<int64_t>::max();
@@ -958,7 +985,8 @@ public slots:
                 {
                     continue;
                 }
-                const int64_t ts = row->get_field(0)->get_value<int64_t>();
+                const int64_t ts =
+                    normalizeTsToMs(row->get_field(0)->get_value<int64_t>());
                 double v = std::numeric_limits<double>::quiet_NaN();
                 QString text;
                 if (fieldToValues(row->get_field(1), v, text))
@@ -1195,15 +1223,16 @@ private:
         {
             storage::RowRecord* row = result->get_row_record();
             if (row == nullptr) continue;
-            const int64_t ts = row->get_field(0)->get_value<int64_t>();
+            const int64_t ts =
+                normalizeTsToMs(row->get_field(0)->get_value<int64_t>());
             double v = std::numeric_limits<double>::quiet_NaN();
             QString text;
             fieldToValues(row->get_field(1), v, text);
-            // Seconds with microsecond precision, trailing zeros trimmed
+            // Seconds with millisecond precision, trailing zeros trimmed
             // (matches the table's Time column), then the CSV separator.
             char tbuf[48];
-            std::snprintf(tbuf, sizeof(tbuf), "%.6f",
-                          static_cast<double>(ts) / 1e6);
+            std::snprintf(tbuf, sizeof(tbuf), "%.3f",
+                          static_cast<double>(ts) / 1e3);
             char* end = tbuf + std::strlen(tbuf) - 1;
             while (end > tbuf && *end == '0') *end-- = '\0';
             if (*end == '.') *end = '\0';

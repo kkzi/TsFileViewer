@@ -75,7 +75,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # POSIX builds (no deploy yet — artifacts only, Qt runtime not bundled).
-  # Qt 6.8 LTS: macOS uses the universal 'macos' arch (native on arm64
+  # Qt 6.8 LTS: macOS uses the universal clang_64 arch (native on arm64
   # runners); Qt 6.7+ renamed the Linux arch to linux_gcc_64. Svg is an
   # addon module in Qt 6 (IconGen links it).
   posix:
@@ -87,7 +87,7 @@ jobs:
             arch: linux_gcc_64
             artifact: linux64
           - os: macos-14
-            arch: macos
+            arch: clang_64
             artifact: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
@@ -101,13 +101,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libgl1-mesa-dev
-
-      - name: Probe available Qt archs (debug)
-        if: runner.os == 'macOS'
-        run: |
-          python3 -m venv /tmp/aqtvenv
-          /tmp/aqtvenv/bin/pip install -q aqtinstall==3.3.*
-          /tmp/aqtvenv/bin/aqt list-qt mac desktop --arch 6.8.2
 
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4

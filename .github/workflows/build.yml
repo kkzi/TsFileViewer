@@ -55,7 +55,9 @@ jobs:
           Expand-Archive mingit.zip mingit
           Copy-Item mingit/mingw64/bin/libssl-1_1-x64.dll artifact/
           Copy-Item mingit/mingw64/bin/libcrypto-1_1-x64.dll artifact/
-          Compress-Archive -Path artifact/* -DestinationPath TsFileViewer-${{ github.ref_name }}-win64.zip
+          # PRs have ref_name "N/merge": sanitize for the zip filename.
+          $ref = "${{ github.ref_name }}" -replace '/', '-'
+          Compress-Archive -Path artifact/* -DestinationPath TsFileViewer-$ref-win64.zip
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -73,16 +75,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Experiment: build on POSIX (no deploy yet — artifacts only, Qt runtime
-  # not bundled). macos-13 is x86_64: Qt 5.15.2 official binaries have no
-  # arm64 build; revisit when the project moves to Qt 6.
+  # not bundled). macos-15-intel is x86_64: Qt 5.15.2 official binaries have
+  # no arm64 build; revisit when the project moves to Qt 6. Qt 5's Linux
+  # arch is gcc_64 (linux64 is the Qt 6 name).
   posix:
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
+            arch: gcc_64
             artifact: linux64
-          - os: macos-13
+          - os: macos-15-intel
+            arch: macos
             artifact: macos
     runs-on: ${{ matrix.os }}
     steps:
@@ -101,7 +106,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '5.15.2'
-          arch: ${{ runner.os == 'Linux' && 'linux64' || 'macos' }}
+          arch: ${{ matrix.arch }}
 
       - name: Configure
         run: cmake -B Build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -114,7 +119,8 @@ jobs:
       - name: Package
         run: |
           cd Build/Release/bin
-          tar czf ../../../TsFileViewer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz TsFileViewer
+          ref="${{ github.ref_name }}"
+          tar czf ../../../TsFileViewer-${ref//\//-}-${{ matrix.artifact }}.tar.gz TsFileViewer
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

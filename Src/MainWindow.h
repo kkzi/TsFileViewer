@@ -146,7 +146,6 @@ private:
 
     MetaInfo lastMeta_;  // last successful open (file dialog data source)
     int activeRepairs_ = 0;       // queued file repairs (reload when 0)
-    bool repairsSucceeded_ = false;  // any repair in the batch worked
     QLabel* analysisLabel_ = nullptr;  // status bar: per-parameter analysis
     QLabel* versionLabel_ = nullptr;   // status bar: v0.1.0 (clickable on update)
     QString latestVersion_;            // newest tag from GitHub ("" unknown)

@@ -32,6 +32,7 @@ struct ParamInfo
     // ranges across files — one of them is likely corrupted), or when the
     // file needed a tail repair. The viewer still shows the data as-is.
     bool suspicious = false;
+    // Tree/key lookup helper used by the UI (search box, param tracking).
     QString key() const { return device + QLatin1Char('/') + measurement; }
     bool operator==(const ParamInfo& o) const
     {
@@ -56,8 +57,7 @@ struct DeviceFileInfo
 Q_DECLARE_METATYPE(DeviceFileInfo)
 
 // Per-file footer-level summary for the toolbar file dialog: gathered
-// while opening (no data decoding). -1 = not collected (single-file mode
-// skips the full metadata walk, so chunks/rows are unknown there).
+// while opening (no data decoding).
 struct FileInfoEntry
 {
     QString path;
@@ -65,8 +65,8 @@ struct FileInfoEntry
     int deviceCount = 0;    // tree devices in this file
     int tableCount = 0;     // real (non-virtual) tables in this file
     int paramCount = 0;     // measurements + table field columns
-    qint64 chunkCount = -1; // sum of per-series chunk metadata list sizes
-    qint64 rowCount = -1;   // sum of footer statistics counts
+    qint64 chunkCount = 0;  // sum of per-series chunk metadata list sizes
+    qint64 rowCount = 0;    // sum of footer statistics counts
     qint64 firstTs = 0;
     qint64 lastTs = 0;
     bool haveRange = false;

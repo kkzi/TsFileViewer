@@ -7,7 +7,6 @@
 #include <QLocale>
 #include <QPainter>
 #include <QPixmap>
-#include <QPolygonF>
 
 #include <cmath>
 #include <limits>
@@ -196,10 +195,10 @@ void ParamTreeModel::rebuildTree()
             nameItem->setData(i, RoleParamIndex);
             auto* typeItem = new QStandardItem(TsFileNames::dataType(p.dataType));
             typeItem->setEditable(false);
-            typeItem->setToolTip(QStringLiteral("type=%1 encoding=%2 compression=%3")
-                                     .arg(TsFileNames::dataType(p.dataType),
-                                          TsFileNames::encoding(p.encoding),
-                                          TsFileNames::compression(p.compression)));
+            // Codec lives in the values bar (single-file); a per-param
+            // tooltip cannot be honest in multi-file mode.
+            typeItem->setToolTip(QStringLiteral("type=%1")
+                                     .arg(TsFileNames::dataType(p.dataType)));
             deviceItem->appendRow({nameItem, typeItem});
         }
     }

@@ -278,7 +278,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
                 tr("%1:\n%2").arg(QDir::toNativeSeparators(path), message));
             return;
         }
-        repairsSucceeded_ = true;
         statusBar()->showMessage(
             tr("Repaired %1 (%2)").arg(QFileInfo(path).fileName(), message),
             8000);
@@ -287,7 +286,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         // mid-batch reload would show partial state anyway.
         if (activeRepairs_ == 0)
         {
-            repairsSucceeded_ = false;
             if (QMessageBox::question(
                     this, tr("Reload files"),
                     tr("Repair finished. Reload the file set now?")) !=

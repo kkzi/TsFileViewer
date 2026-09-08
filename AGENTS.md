@@ -37,7 +37,7 @@ Src/MainWindow.{h,cpp}     主窗口：工具栏、参数树、表格、plot、�
 Src/TsFileDocument.{h,cpp} 数据层：后台 Worker 线程，打开/查询/导出，多文件路由表
 Src/Models.{h,cpp}         ParamTreeModel（device→参数两层树）、ValueTableModel
 Src/Theme.h                扁平单色主题（songbird 风格）
-Src/PathBridge.h           路径透传（历史桥接已废，见陷阱一节）
+Src/PathBridge.h           （已删，恒等透传层内联；历史见陷阱一节）
 Src/LoadingOverlay.{h,cpp} 打开/翻页/导出期间的半透明遮罩
 Src/TableFixture.cpp       控制台小工具，生成表模型 tsfile 供手测（COMAC 归档只有树模型）
 Tools/SpanProbe.cpp        诊断工具：footer/chunk 级统计探针
@@ -55,7 +55,7 @@ Tools/IconGen.cpp          图标生成
 - 参数按 device 聚合成两层树，**不是**拉平列表（早期方案是拉平，后被修正）。
 - 打开时只读 footer（schema + `Statistic` 的 `count_`/`start_time_`/`end_time_`，零数据解码），所以秒级完成。`Statistic` 这三个成员是 public，可直接读。
 - 翻页：全局行号 → 定位文件 → `queryByRow` 本地 offset，跨文件边界时一页拼两段，UI 无感。
-- 恰好 1 个可读文件时自动退化为单文件模式，走原路径。
+- 单文件与多文件共用同一条聚合路径：`Worker::open()` 只额外做修复流程（RestorableTsFileIOWriter 就地截断，多文件模式刻意不做），然后调 `openFiles({path}, repaired, truncated)`。单文件模式下 codec 采集（逐序列 `get_timeseries_schema` 头读）才会运行，多文件跳过。查询/导出统一的 Segs 段列表：单文件 = 只有一段的路由。（2026-09-08 合并，此前是两条独立打开路径 + `files_.size()==1` 退化分支。）
 - 坏文件默认跳过并计数（`skippedFileCount`），不逐个弹修复对话框；单文件模式仍提供 `RestorableTsFileIOWriter` 就地修复（`git 1107986`）。
 
 **如实反馈，不掩盖**
@@ -98,11 +98,11 @@ timeseries index 的统计是对下属 chunk 做 min/max 归并，所以这一�
 
 - 已修的是**呈现**：span 改为 `max(ts) - min(ts)`，矛盾参数标红。
 - **未修**：底层拼接顺序仍由坏统计决定，那些行在表格和曲线里依然乱序。备选方案是把排序键从文件级 index 统计换成 chunk 0 的 `start_time_`（chunk 按时间顺序写入，所以 chunk 0 反映真实首行），加 `startTs <= endTs` 守卫。
-- 注意历史记录里的冲突：早期 Claude 会话曾断言该 chunk 的**数据**也是垃圾（时间戳解出 `-8.2e18`）。后续 pi 会话推翻了这个结论——那些垃圾来自 `SpanProbe --rows` 模式自身的 bug（同一 149 行序列吐出 3537 万行、每行时间戳相同、不同次运行垃圾还不一样），不是文件的事实。结论只停在 footer 层面。
+- 注意历史记录里的冲突：早期 Claude 会话曾断言该 chunk 的**数据**也是垃圾（时间戳解出 `-8.2e18`）。后续 pi 会话推翻了这个结论——那些垃圾来自 `SpanProbe --rows` 模式自身的 bug（同一 149 行序列吐出 3537 万行、每行时间戳相同、不同次运行垃圾还不一样），不是文件的事实。该模式已删除；结论只停在 footer 层面。
 
 **诊断要用 footer/chunk 级，不要全量扫行**
 
-`Tools/SpanProbe.cpp` 共 6 个模式（用法注释在文件头 3-11 行）：
+`Tools/SpanProbe.cpp` 共 5 个模式（用法注释在文件头）：
 
 | 模式 | 用途 | 代价 |
 |---|---|---|
@@ -110,14 +110,13 @@ timeseries index 的统计是对下属 chunk 做 min/max 归并，所以这一�
 | `--stats <dir> <dev> <meas>` | 只看 footer 聚合统计 | footer |
 | `--chunks <dir> <dev> <meas>` | **per-chunk 统计，首选** | footer |
 | `--range <startMs>,<endMs> <dir> <dev> <meas>` | 时间窗内的行，用来分辨「坏统计」还是「真乱序」 | 只解码相交 chunk |
-| `--rows <offset>,<limit> <dir> <dev> <meas>` | 行窗口（**不可信，见下**） | 部分解码 |
 | 无 flag（`<dir> <dev> <meas>`） | 每文件全行扫描 | 极慢 |
 
 - `--chunks` 直接读 footer 里的 per-chunk 统计，零数据解码，每文件秒级，能暴露**文件内部**的乱序，并标 `<== BACK JUMP`。
 - 全行扫描模式跑了一个多小时、生成 1.8 GB 输出后被放弃。21 GB 数据集顺序扫描约需 1.5 小时。
 - `SpanProbe` 必须传 Windows 风格路径（`C:/...`）；传 MSYS 路径（`/c/...`）会静默退出 1。
 - device 名传入时不要带 `--list` 多打印出来的那层 `root.` 前缀。
-- `--rows` 模式不可信（见上），要留就得先修它的 `Field` union 处理。
+- `--rows` 模式已删除（bug 无法低成本修复且曾误导排查，见上方历史冲突条目）。
 - 单独编 SpanProbe 而不进 MSVC 环境会挂在找不到 `sstream`。
 
 **tsfile 库细节**
@@ -126,7 +125,7 @@ timeseries index 的统计是对下属 chunk 做 min/max 归并，所以这一�
 - `Statistic` 的 `count_`/`start_time_`/`end_time_` 是 public（`common/statistic.h:122-124`），可零解码直接读。注意 `count_` 是 **`int32_t`**，跨文件累加总行数必须用 `qint64`。
 - 内嵌 tsfile 用 ExternalProject 接入，因为它的子 CMakeLists 假定自己是顶层项目（依赖 `CMAKE_SOURCE_DIR`）。
 - Windows 下 `zlibstatic[d].lib` 按配置切换名字，`tsfile.lib` 两种配置同名。
-- 非 ASCII 路径：`Src/PathBridge.h` 的 `toLibPath()` 现在是**恒等透传**，Windows 和 POSIX 一样。fork 打了 UTF-8 open 补丁后，库自己把 UTF-8 字节转宽字符调 `_wopen`。老的 8.3 短路径 / ACP 转码桥接（`git 2339ce4`）在那之后变成**有害**的：ACP 回退会把 GBK 字节喂给库，UTF-8→宽字符转换直接拒绝（错误码 28）。已于 `git 20e4e38` 移除。注意 README 的 Notes 一节仍在描述旧桥接，**已过期，以代码为准**。
+- 非 ASCII 路径：不再有桥接层（`PathBridge.h` 已于 2026-09-08 删除）。fork 打了 UTF-8 open 补丁后，库自己把 UTF-8 字节转宽字符调 `_wopen`，路径恒等透传即可。老的 8.3 短路径 / ACP 转码桥接（`git 2339ce4`）在那之后变成**有害**的：ACP 回退会把 GBK 字节喂给库，UTF-8→宽字符转换直接拒绝（错误码 28），已于 `git 20e4e38` 移除。注意 README 的 Notes 一节仍在描述旧桥接，**已过期，以代码为准**。
 - 历史上两次 bump submodule 修的都是 schema 编码上报错误（GORILLA/LZ4 被误标 PLAIN、解出垃圾），编码现在从 chunk header 字节读。
 
 **构建时的常见摩擦**
@@ -149,8 +148,8 @@ timeseries index 的统计是对下属 chunk 做 min/max 归并，所以这一�
 
 - **拼接顺序仍未修**：只修了 span 的呈现。见上方 chunk 0 排序键方案。
 - **无法复验负 span 修复**：原始数据集 `c:\fts_perf_runs\c105_tsfile_150m_1800s_20260827_081013\` 排查中途被删，硬链接副本也一并没了。同族 `c105_tsfile_100m_v2_20260827_084737` 尾文件干净，复现不出。要复验得重新生成一份带同类损坏尾文件的数据集。
-- **chunk 8 是数据坏还是只统计坏**：未判定，`--rows` 探针不可信。
-- **`SpanProbe --rows` 去留**：修 `Field` union 处理，或删掉以免误采信。
+- **chunk 8 是数据坏还是只统计坏**：未判定（`--rows` 探针已删，若需重探可用 `--range` 时间窗模式）。
+- **`SpanProbe --rows` 去留**：已删（2026-09-08）。
 - ~~更新检查存疑~~：已在 `git faa85e2` 解决。根因是 QtNetwork 运行时加载 OpenSSL 而 Qt 因授权不分发它，portable zip 里没有，更新检查静默失败于 "TLS initialization failed"。CI 打包步骤现在从 pinned Git-for-Windows 2.36.1 MinGit 取 `libssl`/`libcrypto` 1_1-x64（1.1.1 时代最后的官方二进制）放到 exe 旁边，`supportsSsl()=1`、releases API 可正常拉取。
 - Linux 理论可行（CMake 里有 `WIN32`/`else()` 分支处理库名和编译选项），但没有 preset、没测过。
 

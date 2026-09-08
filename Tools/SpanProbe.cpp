@@ -7,8 +7,8 @@
 //   SpanProbe --chunks <dir> <device> <measurement> per-chunk stats (fast)
 //   SpanProbe --range <startMs> <endMs> <dir> <device> <measurement>
 //                                                 rows inside a time window
-//   SpanProbe --rows offset,limit <dir> <device> <measurement>
-//                                                 row window via offset/limit
+//   SpanProbe --fileinfo <file>...                per-file summary (dialog
+//                                                 chunks/rows/time range)
 #include "reader/tsfile_reader.h"
 
 #include "common/tsfile_common.h"
@@ -52,11 +52,6 @@ int main(int argc, char** argv)
                        "[start,end] are decoded"),
         QStringLiteral("startMs,endMs"));
     parser.addOption(rangeOpt);
-    QCommandLineOption rowsOpt(
-        QStringLiteral("rows"),
-        QStringLiteral("queryByRow offset/limit window; prints every row"),
-        QStringLiteral("offset,limit"));
-    parser.addOption(rowsOpt);
     parser.process(app);
 
     if (parser.isSet(fileInfoOpt))
@@ -175,56 +170,6 @@ int main(int argc, char** argv)
 
     const QStringList files = QDir(dir).entryList(
         {QStringLiteral("*.tsfile")}, QDir::Files, QDir::Name);
-
-    if (parser.isSet(rowsOpt))
-    {
-        // offset/limit pushdown: whole chunks are skipped without decode, so
-        // a 16-row window at the tail costs one chunk.
-        const QStringList parts = parser.value(rowsOpt).split(QLatin1Char(','));
-        if (parts.size() != 2)
-        {
-            printf("--rows needs offset,limit\n");
-            return 1;
-        }
-        const int offset = parts.at(0).toInt();
-        const int limit = parts.at(1).toInt();
-        for (const QString& name : files)
-        {
-            storage::TsFileReader reader;
-            if (reader.open((dir + "/" + name).toStdString()) != common::E_OK)
-            {
-                printf("%s: OPEN FAILED\n", qPrintable(name));
-                continue;
-            }
-            std::vector<std::string> pathList{fullPath.toStdString()};
-            storage::ResultSet* result = nullptr;
-            printf("%s  offset=%d limit=%d\n", qPrintable(name), offset, limit);
-            if (reader.queryByRow(pathList, offset, limit, result) ==
-                    common::E_OK &&
-                result != nullptr)
-            {
-                bool hasNext = false;
-                int i = 0;
-                while (result->next(hasNext) == common::E_OK && hasNext)
-                {
-                    storage::RowRecord* row = result->get_row_record();
-                    if (row == nullptr) continue;
-                    const qint64 ts = row->get_field(0)->get_value<int64_t>();
-                    const QDateTime dt =
-                        QDateTime::fromMSecsSinceEpoch(ts);
-                    printf("  row %-5d %s (%lld)\n", offset + i,
-                           qPrintable(dt.toString(
-                               QStringLiteral("hh:mm:ss.zzz"))),
-                           static_cast<long long>(ts));
-                    ++i;
-                }
-                reader.destroy_query_data_set(result);
-            }
-            reader.close();
-            fflush(stdout);
-        }
-        return 0;
-    }
 
     if (parser.isSet(rangeOpt))
     {

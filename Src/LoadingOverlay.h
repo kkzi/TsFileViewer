@@ -34,8 +34,6 @@ public:
         hide();
     }
 
-    bool active() const { return isVisible(); }
-
 protected:
     void paintEvent(QPaintEvent*) override;
     void resizeEvent(QResizeEvent*) override

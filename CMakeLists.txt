@@ -63,8 +63,9 @@ ExternalProject_Add(tsfile-ext
         "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}snappy${TSFILE_LIB_SUFFIX}"
         "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}LZ4${TSFILE_LIB_SUFFIX}"
         "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}lzokay${TSFILE_LIB_SUFFIX}"
-        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}zlibstatic${TSFILE_LIB_SUFFIX}"
-        "${TSFILE_LIB_DIR}/${TSFILE_LIB_PREFIX}zlibstaticd${TSFILE_LIB_SUFFIX}")
+        # zlib's CMake renames zlibstatic to "z" on UNIX: libz.a there.
+        "${TSFILE_LIB_DIR}/$<IF:$<BOOL:${WIN32}>,zlibstatic${TSFILE_LIB_SUFFIX},libz.a>"
+        "${TSFILE_LIB_DIR}/zlibstaticd${TSFILE_LIB_SUFFIX}")
 
 add_library(tsfile INTERFACE IMPORTED)
 add_dependencies(tsfile tsfile-ext)
@@ -167,7 +168,7 @@ else()
         ${TSFILE_LIB_DIR}/libsnappy.a
         ${TSFILE_LIB_DIR}/libLZ4.a
         ${TSFILE_LIB_DIR}/liblzokay.a
-        ${TSFILE_LIB_DIR}/libzlibstatic.a
+        ${TSFILE_LIB_DIR}/libz.a
         Threads::Threads
         qcustomplot
         Qt5::Core
@@ -225,7 +226,7 @@ else()
         ${TSFILE_LIB_DIR}/libsnappy.a
         ${TSFILE_LIB_DIR}/libLZ4.a
         ${TSFILE_LIB_DIR}/liblzokay.a
-        ${TSFILE_LIB_DIR}/libzlibstatic.a
+        ${TSFILE_LIB_DIR}/libz.a
         Threads::Threads
     )
 endif()
@@ -262,7 +263,7 @@ else()
         ${TSFILE_LIB_DIR}/libsnappy.a
         ${TSFILE_LIB_DIR}/libLZ4.a
         ${TSFILE_LIB_DIR}/liblzokay.a
-        ${TSFILE_LIB_DIR}/libzlibstatic.a
+        ${TSFILE_LIB_DIR}/libz.a
         Threads::Threads
         Qt5::Core
     )

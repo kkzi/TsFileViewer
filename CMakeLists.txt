@@ -115,7 +115,7 @@ target_include_directories(qcustomplot PUBLIC
     "${QCUSTOMPLOT_DIR}/lib"
     "${CMAKE_BINARY_DIR}/qcustomplot-config")
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS
-    Core Gui Widgets PrintSupport Concurrent Network Svg)
+    Core Gui Widgets PrintSupport Concurrent Network)
 target_link_libraries(qcustomplot PUBLIC
     Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::PrintSupport)
 
@@ -198,18 +198,21 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin"
 )
 
-# ---- IconGen (app icon generator, dev tool) ------------------------------
-# Renders the app icon (QPainter) and writes the PNG set + .ico into Res/.
-# The committed outputs live in Res/; re-run after changing the design:
-#   Build/Release/bin/IconGen  Res
-add_executable(IconGen Tools/IconGen.cpp)
-target_link_libraries(IconGen PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Svg)
+# ---- IconGen (app icon generator, Windows dev tool) ---------------------
+# Renders the Windows app icon (QPainter) and writes the PNG set + .ico
+# into Res/. Windows-only: the .ico it generates is a Windows resource.
+# Re-run after changing the design:  Build/Release/bin/IconGen  Res
 if(WIN32)
+    add_executable(IconGen Tools/IconGen.cpp)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Svg)
+    target_link_libraries(IconGen PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui
+        Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Svg)
     target_compile_options(IconGen PRIVATE /utf-8)
+    set_target_properties(IconGen PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin"
+    )
 endif()
-set_target_properties(IconGen PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin"
-)
 
 # ---- TsFileTableFixture -------------------------------------------------
 # Console helper: writes a table-model tsfile fixture for manual testing of

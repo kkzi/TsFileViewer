@@ -103,18 +103,17 @@ jobs:
           sudo apt-get install -y ninja-build libgl1-mesa-dev
 
       - name: Probe available Qt archs (debug)
+        if: runner.os == 'macOS'
         run: |
-          python3 -m pip install -q aqtinstall==3.3.*
-          host=$(case "${{ runner.os }}" in Linux) echo linux;; macOS) echo mac;; Windows) echo windows;; esac)
-          python3 -m aqt list-qt $host desktop --arch 6.8.2
-          python3 -m aqt list-qt $host desktop --modules 6.8.2 ${{ matrix.arch }} || true
+          python3 -m venv /tmp/aqtvenv
+          /tmp/aqtvenv/bin/pip install -q aqtinstall==3.3.*
+          /tmp/aqtvenv/bin/aqt list-qt mac desktop --arch 6.8.2
 
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.2'
           arch: ${{ matrix.arch }}
-          modules: qtsvg
 
       - name: Configure
         run: cmake -B Build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release

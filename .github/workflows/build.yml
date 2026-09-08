@@ -75,8 +75,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # POSIX builds (no deploy yet — artifacts only, Qt runtime not bundled).
-  # Qt 6.8 LTS: macOS runs native on the arm64 runner (Qt 5.15.2 had no
-  # arm64 binaries and chained us to the retiring x86_64 images). Svg is an
+  # Qt 6.8 LTS: macOS uses the universal 'macos' arch (native on arm64
+  # runners); Qt 6.7+ renamed the Linux arch to linux_gcc_64. Svg is an
   # addon module in Qt 6 (IconGen links it).
   posix:
     strategy:
@@ -84,10 +84,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            arch: gcc_64
+            arch: linux_gcc_64
             artifact: linux64
           - os: macos-14
-            arch: macos_arm64
+            arch: macos
             artifact: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:

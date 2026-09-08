@@ -74,10 +74,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Experiment: build on POSIX (no deploy yet — artifacts only, Qt runtime
-  # not bundled). macos-15-intel is x86_64: Qt 5.15.2 official binaries have
-  # no arm64 build; revisit when the project moves to Qt 6. Qt 5's Linux
-  # arch is gcc_64 (linux64 is the Qt 6 name).
+  # POSIX builds (no deploy yet — artifacts only, Qt runtime not bundled).
+  # Qt 6.8 LTS: macOS runs native on the arm64 runner (Qt 5.15.2 had no
+  # arm64 binaries and chained us to the retiring x86_64 images). Svg is an
+  # addon module in Qt 6 (IconGen links it).
   posix:
     strategy:
       fail-fast: false
@@ -86,9 +86,9 @@ jobs:
           - os: ubuntu-24.04
             arch: gcc_64
             artifact: linux64
-          - os: macos-15-intel
-            arch: clang_64
-            artifact: macos
+          - os: macos-14
+            arch: macos_arm64
+            artifact: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -105,8 +105,9 @@ jobs:
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '5.15.2'
+          version: '6.8.2'
           arch: ${{ matrix.arch }}
+          modules: qtsvg
 
       - name: Configure
         run: cmake -B Build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release

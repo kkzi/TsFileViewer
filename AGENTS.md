@@ -7,7 +7,7 @@ TsFileViewer 的项目上下文。内容从 README、CMake 配置、git 历史�
 Qt5 GUI 的 **只读** tsfile 查看器：打开 `.tsfile`，浏览 device/table → 参数树，右侧表格看值，QCustomPlot 画曲线。
 
 - 同时支持两种数据模型：树模型（COMAC/DPR TsFileArchive 产出）和表模型（Apache upstream），也支持混合文件。
-- 版本号唯一来源是 `Src/Version.h` 的 `APP_VERSION`；CI tag 需与之匹配（`v0.1.4` ↔ `"0.1.4"`）。当前 0.1.4。
+- 版本号唯一来源是 `Src/Version.h` 的 `APP_VERSION`；CI tag 需与之匹配（`v0.1.5` ↔ `"0.1.5"`）。当前 0.1.5。
 - 仓库 `github.com/kkzi/TsFileViewer`，启动时会查 releases 检查更新。
 
 ## 构建与测试

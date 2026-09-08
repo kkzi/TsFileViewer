@@ -6,12 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 # ---- Qt ----------------------------------------------------------------
+# Qt6 preferred, Qt5 fallback (5.15.2 still builds locally). QTDIR may point
+# at either install.
 set(QTDIR $ENV{QTDIR} CACHE PATH "QTDIR")
-set(Qt5_DIR ${QTDIR})
-list(APPEND CMAKE_PREFIX_PATH ${QTDIR})
-find_package(Qt5 CONFIG COMPONENTS Core Gui Widgets REQUIRED)
+if(QTDIR)
+    list(APPEND CMAKE_PREFIX_PATH ${QTDIR})
+endif()
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Widgets)
 
 # ---- 3rd/tsfile (submodule) ---------------------------------------------
 # Embedded Apache TsFile C++ tree. Static link, no tools/tests/examples.
@@ -104,14 +109,15 @@ if(NOT EXISTS "${CMAKE_BINARY_DIR}/qcustomplot-config/config.h")
          "${CMAKE_BINARY_DIR}/qcustomplot-config/config.h")
 endif()
 add_library(qcustomplot STATIC "${QCUSTOMPLOT_DIR}/lib/qcustomplot.cpp")
-# The sources are designed for Qt5 AUTOMOC; enable it for this target only.
+# The sources rely on Qt AUTOMOC; enable it for this target only.
 set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 target_include_directories(qcustomplot PUBLIC
     "${QCUSTOMPLOT_DIR}/lib"
     "${CMAKE_BINARY_DIR}/qcustomplot-config")
-find_package(Qt5 COMPONENTS Core Gui Widgets PrintSupport Concurrent Network Svg REQUIRED)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS
+    Core Gui Widgets PrintSupport Concurrent Network)
 target_link_libraries(qcustomplot PUBLIC
-    Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport)
+    Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::PrintSupport)
 
 # ---- TsFileViewer -------------------------------------------------------
 file(GLOB SRC_MAIN "Src/main.cpp" "Src/MainWindow.*" "Src/Models.*" "Src/TsFileDocument.*" "Src/LoadingOverlay.*" "Src/Version.h")
@@ -153,11 +159,11 @@ if(WIN32)
         ${TSFILE_LIB_DIR}/lzokay.lib
         ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
         qcustomplot
-        Qt5::Core
-        Qt5::Gui
-        Qt5::Widgets
-        Qt5::Concurrent
-        Qt5::Network
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Gui
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Concurrent
+        Qt${QT_VERSION_MAJOR}::Network
     )
 else()
     # POSIX: static lib lands under lib/ with a lib*.a naming; zlib has no
@@ -171,11 +177,11 @@ else()
         ${TSFILE_LIB_DIR}/libz.a
         Threads::Threads
         qcustomplot
-        Qt5::Core
-        Qt5::Gui
-        Qt5::Widgets
-        Qt5::Concurrent
-        Qt5::Network
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Gui
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Concurrent
+        Qt${QT_VERSION_MAJOR}::Network
     )
 endif()
 
@@ -192,18 +198,21 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin"
 )
 
-# ---- IconGen (app icon generator, dev tool) ------------------------------
-# Renders the app icon (QPainter) and writes the PNG set + .ico into Res/.
-# The committed outputs live in Res/; re-run after changing the design:
-#   Build/Release/bin/IconGen  Res
-add_executable(IconGen Tools/IconGen.cpp)
-target_link_libraries(IconGen PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Svg)
+# ---- IconGen (app icon generator, Windows dev tool) ---------------------
+# Renders the Windows app icon (QPainter) and writes the PNG set + .ico
+# into Res/. Windows-only: the .ico it generates is a Windows resource.
+# Re-run after changing the design:  Build/Release/bin/IconGen  Res
 if(WIN32)
+    add_executable(IconGen Tools/IconGen.cpp)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Svg)
+    target_link_libraries(IconGen PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui
+        Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Svg)
     target_compile_options(IconGen PRIVATE /utf-8)
+    set_target_properties(IconGen PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin"
+    )
 endif()
-set_target_properties(IconGen PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/Build/${CMAKE_BUILD_TYPE}/bin"
-)
 
 # ---- TsFileTableFixture -------------------------------------------------
 # Console helper: writes a table-model tsfile fixture for manual testing of
@@ -236,7 +245,7 @@ endif()
 # an HTTPS request (update-check dependency; portable builds must ship the
 # 1_1-x64 DLLs next to the exe).
 add_executable(SslProbe Tools/SslProbe.cpp)
-target_link_libraries(SslProbe PRIVATE Qt5::Core Qt5::Network)
+target_link_libraries(SslProbe PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Network)
 if(WIN32)
     target_compile_options(SslProbe PRIVATE /utf-8)
 endif()
@@ -255,7 +264,7 @@ if(WIN32)
         ${TSFILE_LIB_DIR}/LZ4.lib
         ${TSFILE_LIB_DIR}/lzokay.lib
         ${TSFILE_LIB_DIR}/$<IF:$<CONFIG:Debug>,zlibstaticd.lib,zlibstatic.lib>
-        Qt5::Core
+        Qt${QT_VERSION_MAJOR}::Core
     )
 else()
     target_link_libraries(SpanProbe PRIVATE
@@ -265,6 +274,6 @@ else()
         ${TSFILE_LIB_DIR}/liblzokay.a
         ${TSFILE_LIB_DIR}/libz.a
         Threads::Threads
-        Qt5::Core
+        Qt${QT_VERSION_MAJOR}::Core
     )
 endif()

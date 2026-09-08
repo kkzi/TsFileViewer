@@ -151,7 +151,8 @@ timeseries index 的统计是对下属 chunk 做 min/max 归并，所以这一�
 - **chunk 8 是数据坏还是只统计坏**：未判定（`--rows` 探针已删，若需重探可用 `--range` 时间窗模式）。
 - **`SpanProbe --rows` 去留**：已删（2026-09-08）。
 - ~~更新检查存疑~~：已在 `git faa85e2` 解决。根因是 QtNetwork 运行时加载 OpenSSL 而 Qt 因授权不分发它，portable zip 里没有，更新检查静默失败于 "TLS initialization failed"。CI 打包步骤现在从 pinned Git-for-Windows 2.36.1 MinGit 取 `libssl`/`libcrypto` 1_1-x64（1.1.1 时代最后的官方二进制）放到 exe 旁边，`supportsSsl()=1`、releases API 可正常拉取。
-- Linux 理论可行（CMake 里有 `WIN32`/`else()` 分支处理库名和编译选项），但没有 preset、没测过。
+- ~~Linux 理论可行~~：**已实现**（2026-09-08，PR #1）。CI 三平台全绿：windows-2022（发版）、ubuntu-24.04（gcc_64）、macos-15-intel（clang_64，x86_64 —— Qt 5.15.2 没有 arm64 包，换 Qt 6 才能用 arm runner；macos-13 已退役）。POSIX 仅出 tar.gz artifact，不绑 Qt 运行时、不进 release。POSIX 无 preset，CI 里直接 `cmake -B Build/ci -G Ninja`。
+- POSIX 构建陷阱：① Qt 5 的 aqt 架构名是 `gcc_64`/`clang_64`（`linux64`/`macos` 是 Qt 6 的）；② zlib 官方 CMake 在 UNIX 下把 `zlibstatic` 重命名为 `z` → 链接 `libz.a`，不是 `libzlibstatic.a`；③ `qint64`（long long）与 `int64_t`（long）在 gcc/clang 下是不同类型，`qMin/std::min` 模板推导失败（MSVC 下同为 long long 不会暴露）；④ PR 的 `github.ref_name` 是 `N/merge`，含斜杠，打包文件名要消毒。
 
 ---
 

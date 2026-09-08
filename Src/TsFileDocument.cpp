@@ -943,8 +943,8 @@ public slots:
             }
             else
             {
-                firstTs_ = std::min(firstTs_, minTs);
-                lastTs_ = std::max(lastTs_, maxTs);
+                firstTs_ = std::min(firstTs_, qint64(minTs));
+                lastTs_ = std::max(lastTs_, qint64(maxTs));
             }
         }
 
